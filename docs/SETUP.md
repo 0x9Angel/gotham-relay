@@ -1,9 +1,9 @@
 # Héberger un relais Gotham — guide volontaire (PC)
 
-Merci de faire tourner un relais 🙏. Un relais reçoit des petits paquets
+Merci de faire tourner un relais . Un relais reçoit des petits paquets
 chiffrés de taille fixe, attend quelques millisecondes, et les renvoie au
 nœud suivant. C'est tout. Tu ne vois **aucun message** et tu ne sais **pas
-qui parle à qui** — c'est garanti par le code (voir [RELAY-AUDIT.md](RELAY-AUDIT.md)
+qui parle à qui** — c'est garanti par le code (voir [AUDIT.md](AUDIT.md)
 si tu veux le vérifier toi-même).
 
 ## 1. Pré-requis
@@ -18,7 +18,8 @@ si tu veux le vérifier toi-même).
 
 ## 2. Récupérer le binaire et le vérifier
 
-Télécharge le binaire de ta plateforme depuis la page *Releases* :
+L'opérateur du réseau te fournit le binaire de ta plateforme (avec son
+fichier `.sha256`) :
 
 | Plateforme | Fichier |
 |---|---|
@@ -39,8 +40,8 @@ shasum -a 256 -c gotham-relay-linux-x86_64.sha256
 # compare à la valeur du .sha256
 ```
 
-Tu peux aussi **recompiler depuis les sources** (AGPL, publiques) et comparer
-le hash — la procédure est dans [RELAY-AUDIT.md](RELAY-AUDIT.md).
+Tu peux aussi **lire le code du relais** (publié, AGPL) et vérifier le binaire —
+voir [AUDIT.md](AUDIT.md).
 
 Sous Linux/macOS, rends-le exécutable : `chmod +x gotham-relay-*`.
 
@@ -75,11 +76,11 @@ censure), mais tu peux en choisir un autre avec `--listen-port`.
 3. Repère ton **IP publique** (par ex. via la page d'accueil de la box, ou
    `curl -4 ifconfig.me`). C'est l'adresse que tu communiqueras à l'opérateur.
 
-> ⚠️ Sous Linux, lier un port < 1024 (comme 443) demande des privilèges :
+> Sous Linux, lier un port < 1024 (comme 443) demande des privilèges :
 > soit lancer en root, soit `sudo setcap 'cap_net_bind_service=+ep'
 > ./gotham-relay`, soit choisir un port ≥ 1024 (ex. `--listen-port 4443`).
 >
-> ⚠️ Beaucoup d'abonnements **mobiles/4G et certaines fibres en CGNAT** ne
+> Beaucoup d'abonnements **mobiles/4G et certaines fibres en CGNAT** ne
 > donnent pas d'IP publique joignable. Si la redirection ne « prend » pas,
 > c'est probablement ça.
 
@@ -132,8 +133,8 @@ alors actif dans le réseau.
 ## En cas de souci
 - Le relais log à `info` par défaut. Pour diagnostiquer : `RUST_LOG=debug`.
 - Aucune adresse de tes correspondants n'est jamais journalisée
-  ([RELAY-AUDIT.md](RELAY-AUDIT.md)).
+  ([AUDIT.md](AUDIT.md)).
 - Pour arrêter proprement : `Ctrl-C` (le binaire capte le signal et s'arrête).
 
 Merci encore — chaque relais agrandit l'anonymity set et rend le réseau plus
-résistant. 🛡️
+résistant.
