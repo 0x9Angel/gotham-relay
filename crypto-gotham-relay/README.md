@@ -38,10 +38,10 @@ shipped systemd unit). Otherwise pick a port > 1024.
 | Replay cache (LRU + TTL) |  Implemented + tested |
 | Poisson delay scheduler |  Implemented + tested |
 | Stateless `process_packet` |  Implemented + tested (forward / deliver / drop) |
-| QUIC listener (UDP/443) | ⏳ P2.next |
-| Noise XK per-link | ⏳ P2.next |
-| Prometheus metrics endpoint | ⏳ P2.next |
-| Directory enrolment workflow | ⏳ P3 |
+| QUIC listener (UDP/443) | P2.next |
+| Noise XK per-link | P2.next |
+| Prometheus metrics endpoint | P2.next |
+| Directory enrolment workflow | P3 |
 
 ## Deployment
 

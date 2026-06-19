@@ -138,9 +138,9 @@ done
 echo
 echo "============================================================"
 if [[ "$ENROLLED" -eq 1 ]]; then
-    echo " Gotham relay is LIVE and ENROLLED ✓"
+    echo " Gotham relay is LIVE and ENROLLED"
 else
-    echo " Gotham relay installed — enrollment NOT yet confirmed ⚠"
+    echo " Gotham relay installed — enrollment NOT yet confirmed"
     echo " Most common cause: your UDP port $PORT is not reachable from the"
     echo " internet (router port-forward missing, or CGNAT). The authority"
     echo " must be able to reach $ADVERTISE_IP:$PORT/udp to accept you."

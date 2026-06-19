@@ -1,6 +1,6 @@
 # Héberger un relais Gotham — guide volontaire
 
-Merci de faire tourner un relais 🙏. Un relais reçoit des petits paquets
+Merci de faire tourner un relais. Un relais reçoit des petits paquets
 chiffrés de taille fixe, attend quelques millisecondes, et les renvoie au
 nœud suivant. C'est tout. Tu ne vois **aucun message** et tu ne sais **pas
 qui parle à qui** — c'est garanti par le code (voir [AUDIT.md](AUDIT.md)
@@ -16,7 +16,7 @@ rejoint le réseau sans intervention manuelle de l'opérateur.
 - Idéalement allumé **H24** (un relais qui s'éteint disparaît du réseau).
 - Le **token d'enrôlement** (closed test) — demande-le à l'opérateur du projet.
 
-> ⚠️ Beaucoup d'abonnements **mobiles/4G et certaines fibres en CGNAT** ne
+> Beaucoup d'abonnements **mobiles/4G et certaines fibres en CGNAT** ne
 > donnent pas d'IP publique joignable. Dans ce cas l'auto-enrôlement échouera
 > (l'autorité doit pouvoir *te* joindre) — il te faut un hôte avec une vraie
 > IP publique.
@@ -117,7 +117,7 @@ modifiable avec `--listen-port`.
    - **Livebox / SFR / Bbox** : section *NAT/PAT* ou *Redirection de ports*.
 3. Repère ton **IP publique** (`curl -4 ifconfig.me`). C'est ton `advertise-addr`.
 
-> ⚠️ Sous Linux, lier un port < 1024 (comme 443) demande des privilèges : soit
+> Sous Linux, lier un port < 1024 (comme 443) demande des privilèges : soit
 > root, soit `sudo setcap 'cap_net_bind_service=+ep' ./gotham-relay`, soit un
 > port ≥ 1024 (ex. `--listen-port 4443`).
 
@@ -170,9 +170,9 @@ systemctl status crypto-gotham-relay.service
 tail -F /var/log/gotham/relay.log
 ```
 
-- ✅ **Enrôlé** : un message d'annonce acceptée apparaît, et ta clé publique
+- **Enrôlé** : un message d'annonce acceptée apparaît, et ta clé publique
   apparaît dans l'annuaire : `curl -s http://144.24.205.188:8443/directory`.
-- ⚠️ **`probe failed` / `enroll rejected`** : l'autorité n'arrive pas à te
+- **`probe failed` / `enroll rejected`** : l'autorité n'arrive pas à te
   joindre sur `advertise-addr`. Causes habituelles :
   - port UDP non redirigé sur la box, ou mauvais port/IP annoncés,
   - **CGNAT** (pas d'IP publique joignable),
@@ -187,4 +187,4 @@ tail -F /var/log/gotham/relay.log
   ce rôle si tu héberges depuis chez toi.
 
 Merci encore — chaque relais agrandit l'anonymity set et rend le réseau plus
-résistant. 🛡️
+résistant.
