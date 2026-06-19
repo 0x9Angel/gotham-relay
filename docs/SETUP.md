@@ -86,11 +86,26 @@ censure), mais tu peux en choisir un autre avec `--listen-port`.
 
 ## 5. Lancer le relais
 
+L'opérateur du réseau te donne **l'URL de l'annuaire** (et, en test fermé, un
+**token**). Le relais s'enregistre alors **tout seul** — tu n'as plus rien à
+envoyer à la main :
+
 ```bash
 ./gotham-relay run \
   --key-file relay.key \
-  --listen-port 443
+  --listen-port 443 \
+  --authority-url https://dir.example.org \   # fourni par l'opérateur
+  --advertise-addr 203.0.113.7:443 \          # ton IP publique + port (cf. §4)
+  --enroll-token <token-fourni-par-operateur> \
+  --tier mix                                  # entry | mix | exit (mix = plus sûr)
 ```
+
+L'autorité te recontacte automatiquement pour **vérifier** que ton relais est
+joignable et qu'il détient bien sa clé (handshake Noise-XK), puis te publie dans
+l'annuaire signé. Aucune action manuelle de ta part.
+
+> Sans `--authority-url`, le relais tourne mais ne s'enregistre nulle part
+> (utile pour tester en local).
 
 Knobs utiles (tous optionnels) :
 
@@ -98,6 +113,9 @@ Knobs utiles (tous optionnels) :
 |---|---|---|
 | `--listen-port <n>` | 443 | Port UDP/QUIC d'écoute. |
 | `--listen-host <ip>` | `::` | Interface à lier (toutes par défaut). IP numérique uniquement. |
+| `--advertise-addr <ip:port>` | — | IP publique annoncée (obligatoire avec `--authority-url`). |
+| `--tier <t>` | mix | Rôle annoncé : `entry`/`mix`/`exit` (mix = ne voit ni client ni destinataire). |
+| `--heartbeat-secs <n>` | 300 | Intervalle de réannonce à l'annuaire. |
 | `--max-pps <n>` | 2000 | Plafond paquets/seconde (anti-flood, protège ton CPU). `0` = illimité. |
 | `--max-bytes-per-day <n>` | 0 | **Budget quotidien d'octets** (anti-dépassement de forfait). `0` = illimité. |
 | `--delay-micros <n>` | 20000 | Délai moyen de brassage (20 ms). Ne touche pas à ta latence à toi. |
@@ -110,17 +128,15 @@ Knobs utiles (tous optionnels) :
   et, si tu as un routeur avec SQM/fq_codel, active-le — ça évite tout impact
   ping même en cas de pic.
 
-## 6. T'enregistrer dans l'annuaire
+## 6. Enregistrement — automatique
 
-Un relais n'est utilisé que s'il est listé dans l'**annuaire signé** par
-l'opérateur. Envoie à l'opérateur (par un canal sûr) :
+Avec `--authority-url`, ton relais s'enregistre **tout seul** au démarrage et se
+réannonce toutes les 5 min. L'autorité vérifie qu'il est joignable et qu'il
+détient sa clé, puis le publie dans l'annuaire signé que les apps téléchargent.
+Tu n'as **rien à envoyer manuellement**.
 
-1. ta **clé publique** (`gotham-relay pubkey …`),
-2. ton **IP publique + port** (ex. `203.0.113.7:443`),
-3. (optionnel) un pseudo d'opérateur et le pays.
-
-L'opérateur t'ajoute à l'annuaire signé et le redistribue. Ton relais est
-alors actif dans le réseau.
+Pour vérifier que tu apparais : demande à l'opérateur, ou regarde
+`GET <authority-url>/directory` (l'annuaire signé public).
 
 ## 7. Le laisser tourner (service)
 

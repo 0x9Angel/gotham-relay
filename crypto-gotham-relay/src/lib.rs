@@ -25,6 +25,7 @@
 pub mod client;
 pub mod cover_loop;
 pub mod delay;
+pub mod enroll_client;
 pub mod pool;
 pub mod process;
 pub mod rate_limit;

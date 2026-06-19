@@ -26,6 +26,9 @@ ed25519-dalek = { version = "2", features = ["rand_core"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+# Directory auto-enrollment — POST self-enrollment + heartbeat to the authority.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+
 # Crypto + utils
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 rand = "0.8"

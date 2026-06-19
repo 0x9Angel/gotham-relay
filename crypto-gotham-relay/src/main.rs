@@ -91,6 +91,40 @@ enum Cmd {
         /// caps the relay at ~5 GB/day.
         #[arg(long, default_value_t = 0)]
         max_bytes_per_day: u64,
+
+        /// Directory authority base URL (e.g. `https://dir.example.org`). When
+        /// set, the relay auto-enrolls and heartbeats so the network forms
+        /// itself — no manual directory editing. Requires `--advertise-addr`.
+        #[arg(long)]
+        authority_url: Option<String>,
+
+        /// Public `ip:port` peers should reach this relay on (e.g.
+        /// `203.0.113.7:443`). May differ from `--listen-host` under
+        /// NAT/port-forward. Required when `--authority-url` is set.
+        #[arg(long)]
+        advertise_addr: Option<String>,
+
+        /// Bearer token for the authority's `/enroll` (closed test). Also read
+        /// from `GOTHAM_ENROLL_TOKEN`.
+        #[arg(long, env = "GOTHAM_ENROLL_TOKEN")]
+        enroll_token: Option<String>,
+
+        /// Tier to advertise: `entry|mix|exit`. Default `mix` (a middle hop
+        /// sees neither the client nor the recipient — safest for volunteers).
+        #[arg(long, default_value = "mix")]
+        tier: String,
+
+        /// Optional ISO 3166-1 country code to publish (e.g. `FR`).
+        #[arg(long)]
+        country: Option<String>,
+
+        /// Optional operator nickname to publish (transparency only).
+        #[arg(long)]
+        operator: Option<String>,
+
+        /// Seconds between enrollment heartbeats.
+        #[arg(long, default_value_t = 300)]
+        heartbeat_secs: u64,
     },
     /// Sign a directory document (Ed25519) from a JSON list of relays.
     /// Used by `infra/scripts/sign-directory.sh` to produce a
@@ -216,6 +250,13 @@ async fn main() -> std::io::Result<()> {
             replay_ttl_secs,
             max_pps,
             max_bytes_per_day,
+            authority_url,
+            advertise_addr,
+            enroll_token,
+            tier,
+            country,
+            operator,
+            heartbeat_secs,
         } => {
             let sk = read_key_file(&key_file)?;
             let relay = Relay::new(
@@ -227,6 +268,38 @@ async fn main() -> std::io::Result<()> {
             .with_rate_limit(max_pps, max_bytes_per_day);
 
             let pk_hex = hex::encode(relay.identity_public_key());
+
+            // Auto-enrollment: if an authority URL is configured, announce
+            // ourselves (and heartbeat) so the network self-forms. Never fatal.
+            if let Some(url) = authority_url {
+                let advertise = advertise_addr.ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "--advertise-addr is required with --authority-url",
+                    )
+                })?;
+                // Reject an unreachable advertise address early (clear error).
+                let _: SocketAddr = advertise.parse().map_err(|_| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!("--advertise-addr must be ip:port, got `{advertise}`"),
+                    )
+                })?;
+                let tier = crypto_gotham_relay::enroll_client::parse_tier(&tier)
+                    .map_err(std::io::Error::other)?;
+                let cfg = crypto_gotham_relay::enroll_client::EnrollConfig {
+                    authority_url: url,
+                    advertise_addr: advertise,
+                    kem_pubkey_hex: pk_hex.clone(),
+                    tier,
+                    token: enroll_token,
+                    country,
+                    operator,
+                    heartbeat: Duration::from_secs(heartbeat_secs.max(1)),
+                };
+                info!("auto-enrollment enabled — announcing to directory authority");
+                tokio::spawn(crypto_gotham_relay::enroll_client::run_enrollment_loop(cfg));
+            }
             info!(
                 listen_port,
                 delay_micros,

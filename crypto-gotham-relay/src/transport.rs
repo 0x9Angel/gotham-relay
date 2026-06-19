@@ -369,6 +369,43 @@ pub async fn noise_initiator_handshake(
     Ok(transport)
 }
 
+/// Probe a relay for **liveness + proof-of-possession** in a single step.
+///
+/// The directory authority calls this before listing a self-enrolled relay.
+/// It opens a QUIC connection to `addr` and runs the Noise-XK initiator
+/// handshake, pinning `expected_pk` as the responder's static key. Noise XK
+/// only completes if the responder performs the DH with the secret for
+/// `expected_pk` — so a successful handshake proves at once that:
+///
+/// 1. something is reachable at `addr` (liveness), and
+/// 2. it holds the X25519 secret for `expected_pk` (possession) — an attacker
+///    cannot enroll a key it does not control, even with a valid enroll token.
+///
+/// `initiator_sk` is the authority's own (ephemeral) X25519 secret; the relay
+/// responder accepts any initiator, so it need not be a registered key. The
+/// entire probe is bounded by `timeout`.
+pub async fn probe_relay_liveness(
+    addr: SocketAddr,
+    expected_pk: &[u8; 32],
+    initiator_sk: &[u8; 32],
+    timeout: std::time::Duration,
+) -> Result<(), TransportError> {
+    let fut = async {
+        let endpoint = build_client_endpoint()?;
+        let conn = endpoint.connect(addr, "gotham-relay.local")?.await?;
+        let (mut send, mut recv) = conn.open_bi().await?;
+        // The handshake completing IS the proof — we don't send any frames.
+        let _ = noise_initiator_handshake(initiator_sk, expected_pk, &mut send, &mut recv).await?;
+        conn.close(0u32.into(), b"probe ok");
+        endpoint.wait_idle().await;
+        Ok::<(), TransportError>(())
+    };
+    match tokio::time::timeout(timeout, fut).await {
+        Ok(res) => res,
+        Err(_) => Err(TransportError::BadHandshake),
+    }
+}
+
 // ─── Noise-encrypted Gotham frame I/O ───────────────────────────────────────
 
 /// Encrypt one Gotham packet and write the resulting `FRAME_LEN` bytes
@@ -674,6 +711,54 @@ mod tests {
             _ => panic!("expected v4"),
         };
         (v4, handle)
+    }
+
+    #[tokio::test]
+    async fn probe_verifies_liveness_and_possession() {
+        use x25519_dalek::{PublicKey, StaticSecret};
+        let sk = [11u8; 32];
+        let (addr, _h) = spawn_relay(sk).await;
+        let pk = PublicKey::from(&StaticSecret::from(sk)).to_bytes();
+        let initiator = [22u8; 32];
+
+        // Correct key + reachable → probe succeeds (liveness + possession).
+        probe_relay_liveness(
+            SocketAddr::V4(addr),
+            &pk,
+            &initiator,
+            std::time::Duration::from_secs(5),
+        )
+        .await
+        .expect("probe should succeed against a live relay that holds the key");
+
+        // Wrong key → handshake can't complete → probe fails. An attacker
+        // cannot enroll a key it does not control.
+        let wrong = [0xAAu8; 32];
+        let res = probe_relay_liveness(
+            SocketAddr::V4(addr),
+            &wrong,
+            &initiator,
+            std::time::Duration::from_secs(3),
+        )
+        .await;
+        assert!(
+            res.is_err(),
+            "probe must fail when the responder does not hold the claimed key"
+        );
+    }
+
+    #[tokio::test]
+    async fn probe_fails_for_unreachable_address() {
+        // Nothing listening here → probe fails (not live).
+        let dead: SocketAddr = "127.0.0.1:1".parse().unwrap();
+        let res = probe_relay_liveness(
+            dead,
+            &[7u8; 32],
+            &[22u8; 32],
+            std::time::Duration::from_secs(2),
+        )
+        .await;
+        assert!(res.is_err(), "probe must fail when nothing is reachable");
     }
 
     /// Spawn a relay with a delivery handler. Returns the bound address
