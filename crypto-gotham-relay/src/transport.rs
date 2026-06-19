@@ -466,7 +466,9 @@ pub async fn serve_connection(
                 delay,
                 packet,
             } => {
-                debug!(?next_addr, "forward outcome");
+                // Anonymity hard-rule: never log the next-hop address (routing
+                // metadata = who talks to whom). Log only opaque outcomes.
+                debug!("forward outcome");
                 let pool = Arc::clone(&pool);
                 tokio::spawn(async move {
                     tokio::time::sleep(delay).await;
@@ -474,8 +476,8 @@ pub async fn serve_connection(
                         .send(std::net::SocketAddr::V4(next_addr), next_node_id, &packet)
                         .await
                     {
-                        Ok(()) => debug!(?next_addr, "forward via pool ok"),
-                        Err(e) => warn!(error = ?e, ?next_addr, "forward via pool failed"),
+                        Ok(()) => debug!("forward via pool ok"),
+                        Err(e) => warn!(error = ?e, "forward via pool failed"),
                     }
                 });
             }

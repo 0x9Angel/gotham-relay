@@ -247,7 +247,8 @@ impl Relay {
             return ProcessOutcome::Drop(DropReason::PolicyDenied);
         }
 
-        trace!(?delay, next_port = outcome.record.next_port, "forward");
+        // Anonymity hard-rule: never log routing fields (next port/addr).
+        trace!(?delay, "forward");
         let _ = RECORD_LEN; // silence unused-import warning when not in test
         ProcessOutcome::Forward {
             next_addr,

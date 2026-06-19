@@ -132,35 +132,44 @@ impl RateLimiter {
     /// throttled packet consumes neither a token nor quota, so a sustained
     /// flood is rejected at constant cost.
     pub fn check_at(&mut self, _packet_len: usize, now: Instant) -> RateDecision {
+        // Compute every would-be update on locals first, return on any
+        // Throttle WITHOUT touching `self`, then commit only on Allow — so a
+        // throttled packet never resets the quota window or refills the
+        // bucket (the invariant a flood relies on for constant-cost rejection).
+
         // ── Daily quota (checked first; cheaper and the harder cap) ──────
+        let mut bytes_used = self.bytes_used;
+        let mut window_start = self.window_start;
         if self.max_bytes_per_day > 0 {
-            if now.saturating_duration_since(self.window_start) >= QUOTA_WINDOW {
-                self.bytes_used = 0;
-                self.window_start = now;
+            if now.saturating_duration_since(window_start) >= QUOTA_WINDOW {
+                bytes_used = 0;
+                window_start = now;
             }
-            if self.bytes_used.saturating_add(WIRE_BYTES_PER_PACKET) > self.max_bytes_per_day {
+            if bytes_used.saturating_add(WIRE_BYTES_PER_PACKET) > self.max_bytes_per_day {
                 return RateDecision::Throttled(ThrottleReason::DailyQuota);
             }
         }
 
         // ── Packets/sec token bucket ─────────────────────────────────────
+        let mut tokens = self.tokens;
         if self.max_pps > 0.0 {
             let elapsed = now
                 .saturating_duration_since(self.last_refill)
                 .as_secs_f64();
-            self.tokens = (self.tokens + elapsed * self.max_pps).min(self.burst);
-            self.last_refill = now;
-            if self.tokens < 1.0 {
+            tokens = (tokens + elapsed * self.max_pps).min(self.burst);
+            if tokens < 1.0 {
                 return RateDecision::Throttled(ThrottleReason::Rate);
             }
         }
 
         // Both guards passed — commit (consume a token + account bytes).
         if self.max_pps > 0.0 {
-            self.tokens -= 1.0;
+            self.tokens = tokens - 1.0;
+            self.last_refill = now;
         }
         if self.max_bytes_per_day > 0 {
-            self.bytes_used = self.bytes_used.saturating_add(WIRE_BYTES_PER_PACKET);
+            self.bytes_used = bytes_used.saturating_add(WIRE_BYTES_PER_PACKET);
+            self.window_start = window_start;
         }
         RateDecision::Allow
     }

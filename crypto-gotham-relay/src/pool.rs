@@ -39,7 +39,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use quinn::{Connection, Endpoint, SendStream};
+use quinn::{Connection, Endpoint, RecvStream, SendStream};
 use snow::TransportState;
 use tokio::sync::Mutex;
 use tracing::debug;
@@ -60,6 +60,11 @@ struct PooledConnection {
     #[allow(dead_code)] // kept alive so the stream stays valid
     conn: Connection,
     send: Mutex<SendStream>,
+    // Read half of the bi-stream. We never read from it in v0.1, but dropping
+    // it would half-close the stream — so we keep it owned by the pooled
+    // connection and let it drop together with `conn` (no leak).
+    #[allow(dead_code)]
+    recv: RecvStream,
     noise: Mutex<TransportState>,
     last_used: Mutex<Instant>,
 }
@@ -184,13 +189,13 @@ impl ConnectionPool {
         let conn = self.endpoint.connect(addr, "gotham-relay.local")?.await?;
         let (mut send, mut recv) = conn.open_bi().await?;
         let noise = noise_initiator_handshake(&self.my_sk, &peer_pk, &mut send, &mut recv).await?;
-        // We don't expect peer-to-client data on this bi-stream in v0.1,
-        // but we keep `recv` alive (drop would half-close the bi-stream).
-        // It will be dropped when the PooledConnection is dropped.
-        std::mem::forget(recv);
+        // We don't expect peer-to-client data on this bi-stream in v0.1, but we
+        // keep `recv` alive (drop would half-close the bi-stream). It is owned
+        // by the PooledConnection and dropped with it — no mem::forget leak.
         Ok(Arc::new(PooledConnection {
             conn,
             send: Mutex::new(send),
+            recv,
             noise: Mutex::new(noise),
             last_used: Mutex::new(Instant::now()),
         }))
