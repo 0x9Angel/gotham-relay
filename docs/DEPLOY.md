@@ -29,7 +29,17 @@ single-machine dev self-loop. This is the deployable counterpart to
   **authority** Ed25519 key. Apps verify it before routing.
 - **Apps** load the directory, pick a 3-hop path (entry → mix → exit), and
   route. With `CRYPTO_GOTHAM_DEVMODE=0` they use this external directory
-  instead of fabricating a self-loop (see SECURITY-AUDIT.md M-9).
+  instead of fabricating a self-loop (see SECURITY-AUDIT.md M-9). Path
+  selection enforces **global diversity**: every hop must use a distinct
+  operator and a distinct network (`/16` for IPv4, `/48` for IPv6), and entry
+  ≠ exit. A route therefore needs relays spread across **≥2 distinct `/16`
+  blocks**; if the available relays all share one `/16`, the diversity guard
+  refuses to build a path and no message is routed. This is the current live
+  state: a directory authority + 3 relays are online, but all 3 sit on a
+  single `/16`, so no real message has yet transited the live network.
+  Network-level anonymity is therefore **theoretical today** — it becomes
+  real-world once relays span multiple `/16`s and an external audit exists.
+  Message **content** protection (E2E) is independent of this and is solid.
 
 Receiving (App B) requires the recipient's node to be the **exit** the path
 terminates at — the "app = relay" model. App→app delivery wiring is tracked
@@ -145,6 +155,13 @@ Verify in the app logs: `directory_relays = 3` pointing at your real IPs, and
 6. **App embedded relay binds localhost by default.** The app's own receive
    relay binds `127.0.0.1` unless `gotham_bind_host` is set to a routable IP.
    Needed only for the "app = exit" model; normal senders don't need it.
+7. **Path diversity gates routing (`/16` requirement).** The path selector
+   requires each hop on a distinct operator and a distinct network (`/16`
+   IPv4, `/48` IPv6), with entry ≠ exit. If every relay in the directory shares
+   one `/16`, **no route can be built and nothing is sent** — this is by design
+   (it defeats single-network correlation), not a bug. When deploying, place
+   relays across **≥2 distinct `/16` blocks**. The current live test relays
+   all share one `/16`, which is exactly why no real message has transited yet.
 
 ---
 
@@ -170,8 +187,13 @@ None of these are validated in-session — each needs real, separated machines:
       fails cleanly and recovers when a new directory is published.
 - [ ] **Anti-correlation (research-grade)**: the property the mix delays exist
       for — unlinkability of entry-ingress vs exit-egress timing — needs a
-      traffic-analysis harness over many flows. **Distribution is unit-tested;
-      anti-correlation is NOT proven here.**
+      traffic-analysis harness over many flows, run against relays spanning
+      **multiple `/16`s** (a single-`/16` set won't even build a route).
+      **Distribution is unit-tested; anti-correlation is NOT proven here, and
+      network-level anonymity remains theoretical until this and an external
+      audit are done.** Note the standing non-goals: no resistance to a global
+      passive adversary, to >60% relay compromise, to endpoint malware, or to
+      forced disclosure of non-ephemeral keys.
 
 ---
 

@@ -1,18 +1,33 @@
 # Gotham — relais volontaires
 
 **Gotham** est le réseau de relais anonyme d'un messager chiffré souverain
-(français). Il route les messages comme un mixnet — façon Tor, mais dédié
-uniquement à la messagerie. Pour que l'anonymat tienne, il faut **beaucoup de
-relais tenus par des gens différents**. Ce dépôt regroupe tout ce qu'il faut
-pour en héberger un **en autonomie**.
+(français). Il route les messages comme un mixnet — même famille que Tor / Nym /
+Loopix, mais dédié uniquement à la messagerie. Pour que l'anonymat tienne, il
+faut **beaucoup de relais tenus par des gens différents, et surtout répartis sur
+des réseaux (/16) différents**. Ce dépôt regroupe tout ce qu'il faut pour en
+héberger un **en autonomie**.
+
+> **État actuel (honnête) :** l'anonymat au niveau réseau est encore
+> **théorique**. Une autorité d'annuaire et 3 relais sont en ligne, mais les 3
+> partagent un seul /16 ; la règle de diversité de chemin (opérateur distinct +
+> réseau /16 distinct sur tout le trajet, entrée ≠ sortie) **refuse donc de
+> construire une route** et **aucun message n'a encore transité le réseau
+> réel**. C'est exactement pour ça qu'un volontaire sur un **/16 différent** est
+> précieux aujourd'hui. La protection du **contenu** (chiffrement de bout en
+> bout) est, elle, solide et testable dès maintenant ; l'anonymat réseau ne sera
+> prouvé qu'une fois le réseau étalé sur plusieurs /16 et audité en externe.
 
 ## Pourquoi héberger un relais ?
 
-Plus il y a de relais indépendants, plus le réseau est solide et impossible à
-surveiller. Faire tourner un relais, c'est :
+Plus il y a de relais indépendants — et répartis sur des /16 différents — plus
+le réseau devient difficile à surveiller. Faire tourner un relais, c'est :
 
-- **Aucun accès aux messages** — tout est chiffré de bout en bout.
-- **Aucun moyen de savoir qui parle à qui** — c'est le but du système.
+- **Aucun accès aux messages** — tout est chiffré de bout en bout (X3DH +
+  Double Ratchet, classe Signal). Cette garantie-là est effective aujourd'hui.
+- **Personne ne devrait pouvoir savoir qui parle à qui** — c'est le but du
+  système. ⚠️ Cette propriété n'est réellement acquise **qu'une fois le réseau
+  étalé sur plusieurs /16** (voir la note d'état plus haut) ; ce n'est pas
+  encore prouvé en conditions réelles, ni audité par un tiers indépendant.
 - **Aucun risque légal type « nœud de sortie Tor »** — le réseau est fermé,
   un relais ne se connecte jamais à l'Internet public.
 - **Pas d'impact sur ton ping en jeu** — quelques dizaines de kbps au

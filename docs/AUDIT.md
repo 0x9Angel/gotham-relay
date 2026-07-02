@@ -24,15 +24,21 @@ crate, juste à côté.
 
 Quand un relais transmet un paquet, il **déchiffre uniquement sa propre case
 de routage** dans l'en-tête (la couche d'oignon qui lui dit « prochain saut =
-X »). Le **contenu** (la charge utile) n'est jamais déchiffré : il est recopié
-tel quel vers le saut suivant.
+X »). Le **contenu** (la charge utile) n'est jamais déchiffré : le relais lui
+applique seulement la couche de PRP grand-bloc (LIONESS) de son saut, puis
+transmet le résultat au saut suivant.
 
 - Déchiffrement limité à l'en-tête de ce saut :
   [process.rs:199](../crypto-gotham-relay/src/process.rs#L199)
-  — *« Unwrap (verifies MAC + decrypts this hop's slot) »*.
-- Charge utile recopiée **verbatim**, jamais ouverte :
-  [process.rs:242](../crypto-gotham-relay/src/process.rs#L242)
-  — `next_packet[HEADER_LEN..].copy_from_slice(&packet_bytes[HEADER_LEN..])`.
+  — *« Unwrap (verifies MAC + decrypts this hop's slot) »*. Les points X25519
+  d'ordre faible sont désormais **rejetés** à cette étape (correction du
+  constat M-1 « Sphinx low-order points » de l'audit interne).
+- Charge utile transformée par une **PRP grand-bloc non-malléable** (LIONESS,
+  Anderson-Biham 4 tours) à chaque saut, jamais ouverte : le relais applique la
+  transformation puis passe le résultat au saut suivant. Cette couche (qui a
+  remplacé l'ancien XOR / AEAD par branche) **défait le tagging** — un relais ne
+  peut pas marquer un payload pour le reconnaître en aval :
+  [process.rs:242](../crypto-gotham-relay/src/process.rs#L242).
 
 Et même au **dernier saut** (le relais embarqué du destinataire), ce qui est
 extrait reste du **chiffré de bout en bout** (sealed-sender + Double Ratchet) :
@@ -63,7 +69,9 @@ C'est le cœur de l'anonymat (chiffrement en oignon, façon Tor/mixnet) :
   [process.rs:160](../crypto-gotham-relay/src/process.rs#L160).
 - Un **délai de brassage** (Poisson) décorelle les temps d'arrivée/départ.
 
-**Conclusion : aucun relais seul ne peut relier deux interlocuteurs.**
+**Conclusion : aucun relais seul ne peut relier deux interlocuteurs** — une
+fois le réseau vivant réparti sur plusieurs /16 (voir « Limites honnêtes » :
+aujourd'hui la garantie est théorique, pas encore éprouvée en production).
 
 ---
 
@@ -138,7 +146,7 @@ source complète : la compilation se fait **sur le runner natif de chaque OS**
 
 | Crainte | Réalité | Preuve |
 |---|---|---|
-| « Il lit mes messages » | Jamais — contenu E2E, recopié verbatim | process.rs:199, :242 |
+| « Il lit mes messages » | Jamais — contenu E2E, PRP LIONESS par saut (non-malléable) | process.rs:199, :242 |
 | « Il sait qui parle à qui » | Non — oignon, pas d'IP source loggée | process.rs:33, :160 |
 | « Mon IP va servir à attaquer des sites » | Non — aucune sortie clearnet | transport.rs:508, pool.rs:189 |
 | « Ça va saturer ma connexion » | Plafonné par `--max-pps` / `--max-bytes-per-day` | rate_limit.rs |
@@ -146,14 +154,28 @@ source complète : la compilation se fait **sur le runner natif de chaque OS**
 
 ## Limites honnêtes (ce qu'on ne te cache pas)
 
-- **v0.1** : la couche de chiffrement *par saut de la charge utile* (oignon du
-  payload) n'est pas encore active ; le contenu reste E2E-chiffré, mais un
-  relais pourrait théoriquement distinguer deux payloads par leurs octets
-  (menace limitée — c'est déjà du chiffré). Prévu en v0.2.
-- Le **réseau est jeune** : plus il y a de relais, plus l'anonymat est fort.
+- **L'anonymat réseau est aujourd'hui théorique**, pas encore prouvé en
+  conditions réelles. Un annuaire (directory authority) et 3 relais sont en
+  ligne, mais ces 3 relais partagent un même /16 : le garde-fou de diversité
+  de chemin (opérateur distinct + réseau distinct, /16 IPv4 ou /48 IPv6, sur
+  tout le chemin, entrée ≠ sortie) **refuse donc de construire une route**, et
+  **aucun message n'a encore transité le réseau en production**. La garantie
+  « personne ne peut relier deux interlocuteurs » tient dès qu'existera un
+  réseau vivant réparti sur **plusieurs /16** ; ce n'est pas le cas
+  aujourd'hui. La protection du **contenu** (E2E) est, elle, solide et
+  testable dès maintenant.
+- **Pas d'audit externe indépendant à ce jour** : seulement un audit interne
+  (2026-05-25) et plusieurs revues adverses multi-agents, dont toutes les
+  conclusions confirmées ont été corrigées. Un audit tiers reste à faire.
+- Le **réseau est jeune** : plus il y a de relais (et surtout plus ils sont
+  répartis sur des /16 et des opérateurs distincts), plus l'anonymat est fort.
   C'est précisément pourquoi on recrute.
 - Le **limiteur est global** au nœud (pas par-source) — suffisant pour
-  protéger tes ressources ; l'équité par-source viendra en v0.2.
+  protéger tes ressources ; l'équité par-source reste un chantier futur.
+
+Non-objectifs assumés : le protocole ne prétend **pas** résister à un
+adversaire passif global, à la compromission de plus de 60 % des relais, à un
+malware sur ton terminal, ni à la remise forcée de clés non éphémères.
 
 Une question, un doute, un bout de code pas clair ? Demande — l'audit, c'est
 le but.

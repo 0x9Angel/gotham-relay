@@ -1,10 +1,20 @@
 # Héberger un relais Gotham — guide volontaire
 
 Merci de faire tourner un relais. Un relais reçoit des petits paquets
-chiffrés de taille fixe, attend quelques millisecondes, et les renvoie au
-nœud suivant. C'est tout. Tu ne vois **aucun message** et tu ne sais **pas
-qui parle à qui** — c'est garanti par le code (voir [AUDIT.md](AUDIT.md)
-si tu veux le vérifier toi-même).
+chiffrés de taille fixe (Sphinx v0.2, 2048 octets), attend quelques
+millisecondes, et les renvoie au nœud suivant. C'est tout. Tu ne vois
+**aucun message** : le contenu est chiffré de bout en bout et le code ne
+déchiffre qu'une seule couche d'oignon (voir [AUDIT.md](AUDIT.md) si tu
+veux le vérifier toi-même).
+
+> **Honnêteté sur l'anonymat réseau.** La propriété « personne ne peut
+> savoir qui parle à qui » ne devient réelle qu'**une fois** qu'un réseau
+> vivant s'étend sur **plusieurs /16 distincts**. Aujourd'hui les 3 relais
+> en ligne partagent un seul /16, donc la garde de diversité de chemin
+> (correcte) refuse de construire une route : **aucun message réel n'a
+> encore transité le réseau vivant**. La protection du *contenu* (E2E) est
+> solide et testable ; l'anonymat *réseau* reste théorique tant qu'il n'y a
+> pas (a) des relais sur plusieurs /16 et (b) un audit externe indépendant.
 
 Avec l'**auto-enrôlement**, ton relais s'annonce tout seul à l'annuaire et
 rejoint le réseau sans intervention manuelle de l'opérateur.
@@ -186,5 +196,15 @@ tail -F /var/log/gotham/relay.log
 - Un **mix** (défaut) ne voit ni l'expéditeur ni le destinataire — privilégie
   ce rôle si tu héberges depuis chez toi.
 
-Merci encore — chaque relais agrandit l'anonymity set et rend le réseau plus
-résistant.
+> **Prérequis pour une route qui fonctionne.** La garde de diversité de
+> chemin exige un opérateur **et** un réseau distincts (**/16** en IPv4,
+> **/48** en IPv6) sur tout le chemin, entrée ≠ sortie. Il faut donc des
+> relais répartis sur **au moins deux /16 différents** pour que l'autorité
+> puisse assembler une route. Aujourd'hui tous les relais vivants partagent
+> un seul /16 : ton relais aide à lever ce blocage. Ce guide ne prétend à
+> **aucune garantie absolue** (rien n'est « intraçable ») ; il n'y a pas
+> non plus de résistance à un adversaire passif global, à la compromission
+> de plus de 60 % des relais, ni au malware sur l'endpoint.
+
+Merci encore — chaque relais agrandit l'anonymity set et, dès qu'il se
+trouve sur un /16 encore absent, rend le réseau réellement routable.
