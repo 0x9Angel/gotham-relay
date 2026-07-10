@@ -104,6 +104,7 @@ echo " Public key : $PUBKEY"
 echo " Advertised : $ADVERTISE_MSG   (tier: $TIER, port $PORT/udp)"
 echo " Authority  : $AUTHORITY_URL"
 echo " Live logs  : tail -F $LOG   (look for 'enrolled with directory authority')"
+echo " Uninstall  : curl -fsSL https://raw.githubusercontent.com/$REPO/main/infra/scripts/uninstall-relay-macos.sh | sudo bash"
 echo
 echo " Keep this Mac awake on power so the relay stays online:"
 echo "   sudo pmset -c sleep 0 disablesleep 1"

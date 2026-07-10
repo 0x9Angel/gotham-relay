@@ -168,4 +168,5 @@ echo
 echo " Live logs  : tail -F $LOG_DIR/relay.log"
 echo " Status     : systemctl status crypto-gotham-relay.service"
 echo " Restart    : sudo systemctl restart crypto-gotham-relay.service"
+echo " Uninstall  : curl -fsSL https://raw.githubusercontent.com/$REPO/main/infra/scripts/uninstall-relay.sh | sudo bash"
 echo "============================================================"

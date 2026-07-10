@@ -100,7 +100,7 @@ Write-Host " Advertised : $AdvMsg   (tier: $Tier, port $Port/udp)"
 Write-Host " Authority  : $AuthUrl"
 Write-Host " Status     : Get-ScheduledTask GothamRelay | Get-ScheduledTaskInfo"
 Write-Host " Stop/Start : Stop-ScheduledTask GothamRelay  /  Start-ScheduledTask GothamRelay"
-Write-Host " Remove     : Unregister-ScheduledTask -TaskName GothamRelay -Confirm:`$false"
+Write-Host " Uninstall  : irm https://raw.githubusercontent.com/$Repo/main/infra/scripts/uninstall-relay.ps1 | iex"
 Write-Host "============================================================"
 Write-Host ""
 Write-Host " REACHABILITY — the authority must reach you at $AdvMsg over UDP:" -ForegroundColor Cyan

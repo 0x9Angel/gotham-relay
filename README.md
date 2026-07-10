@@ -80,6 +80,17 @@ a home relay can't currently work around.
 - **macOS:** `tail -F /usr/local/var/gotham-relay/relay.log`
 - **Windows:** `Get-ScheduledTask GothamRelay | Get-ScheduledTaskInfo`
 
+## Uninstall
+
+Removes the service, binary, config, firewall rule, and identity key.
+
+- **Linux:** `curl -fsSL https://raw.githubusercontent.com/0x9Angel/gotham-relay/main/infra/scripts/uninstall-relay.sh | sudo bash`
+- **macOS:** `curl -fsSL https://raw.githubusercontent.com/0x9Angel/gotham-relay/main/infra/scripts/uninstall-relay-macos.sh | sudo bash`
+- **Windows:** `irm https://raw.githubusercontent.com/0x9Angel/gotham-relay/main/infra/scripts/uninstall-relay.ps1 | iex`
+
+Add `GOTHAM_KEEP_KEYS=1` (PowerShell `$env:GOTHAM_KEEP_KEYS='1'`) to keep the
+relay's identity key for a later reinstall with the same public key.
+
 ---
 
 ## Honest status
