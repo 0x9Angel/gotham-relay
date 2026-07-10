@@ -48,14 +48,26 @@ Write-Host "[2/5] Generating relay identity (if absent)..."
 if (-not (Test-Path $Key)) { & $Bin keygen --key-file $Key | Out-Null }
 $PubKey = (& $Bin pubkey --key-file $Key)
 
-Write-Host "[3/5] Building launch command..."
+Write-Host "[3/5] Detecting public address + building launch command..."
+# Address peers reach us on. Prefer an explicit override; else auto-detect the
+# public IP (works on a VPS and on a home box). We do NOT rely on UPnP for the
+# address: a cloud host has no UPnP-IGD gateway and the relay would otherwise
+# crash with "no UPnP-IGD gateway found on the LAN". Same approach as Linux.
+$AdvIp = $env:GOTHAM_ADVERTISE_IP
+if (-not $AdvIp) {
+    try   { $AdvIp = (Invoke-RestMethod -Uri "https://api.ipify.org" -TimeoutSec 8).ToString().Trim() }
+    catch { $AdvIp = $null }
+}
+if (-not $AdvIp) {
+    throw "Could not detect a public IP (api.ipify.org unreachable). Re-run with it set: `$env:GOTHAM_ADVERTISE_IP='<your.public.ip>' then the install one-liner."
+}
 $binArgs = @(
     "run", "--key-file", $Key,
     "--listen-host", "0.0.0.0", "--listen-port", $Port,
-    "--authority-url", $AuthUrl, "--tier", $Tier, "--heartbeat-secs", "60"
+    "--authority-url", $AuthUrl, "--tier", $Tier, "--heartbeat-secs", "60",
+    "--advertise-addr", "$($AdvIp):$Port"
 )
-if ($env:GOTHAM_ADVERTISE_IP) { $binArgs += @("--advertise-addr", "$($env:GOTHAM_ADVERTISE_IP):$Port") }
-$AdvMsg = if ($env:GOTHAM_ADVERTISE_IP) { "$($env:GOTHAM_ADVERTISE_IP):$Port (manual)" } else { "auto (UPnP-IGD)" }
+$AdvMsg = "$($AdvIp):$Port"
 
 # Token (only in closed/token mode) via a MACHINE env var so it is not visible
 # in the task's command line. Open enrollment needs none.
@@ -89,4 +101,14 @@ Write-Host " Authority  : $AuthUrl"
 Write-Host " Status     : Get-ScheduledTask GothamRelay | Get-ScheduledTaskInfo"
 Write-Host " Stop/Start : Stop-ScheduledTask GothamRelay  /  Start-ScheduledTask GothamRelay"
 Write-Host " Remove     : Unregister-ScheduledTask -TaskName GothamRelay -Confirm:`$false"
+Write-Host "============================================================"
+Write-Host ""
+Write-Host " REACHABILITY — the authority must reach you at $AdvMsg over UDP:" -ForegroundColor Cyan
+Write-Host "   * VPS / cloud:  open UDP $Port in your provider's firewall / security group."
+Write-Host "   * Home box:     forward UDP $Port on your router to this machine's LAN IP."
+Write-Host "   * Mobile hotspot / 4G-5G tethering / shared connection = CGNAT:"
+Write-Host "                   NO inbound reachability — you cannot host a relay this way."
+Write-Host ""
+Write-Host " Confirm you actually ENROLLED (run this now):" -ForegroundColor Cyan
+Write-Host "   irm https://raw.githubusercontent.com/0x9Angel/gotham-relay/main/infra/scripts/diagnose-relay.ps1 | iex"
 Write-Host "============================================================"
