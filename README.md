@@ -1,92 +1,97 @@
-# Gotham — relais volontaires
+# Gotham relay
 
-**Gotham** est le réseau de relais anonyme d'un messager chiffré souverain
-(français). Il route les messages comme un mixnet — même famille que Tor / Nym /
-Loopix, mais dédié uniquement à la messagerie. Pour que l'anonymat tienne, il
-faut **beaucoup de relais tenus par des gens différents, et surtout répartis sur
-des réseaux (/16) différents**. Ce dépôt regroupe tout ce qu'il faut pour en
-héberger un **en autonomie**.
+**Run a node of the Gotham mixnet. One command. No account, no token, no
+sign-up.** The network is made of volunteer relays like the one you are about
+to start — the more independent operators, the stronger everyone's anonymity.
 
-> **État actuel (honnête) :** l'anonymat au niveau réseau est encore
-> **théorique**. Une autorité d'annuaire et 3 relais sont en ligne, mais les 3
-> partagent un seul /16 ; la règle de diversité de chemin (opérateur distinct +
-> réseau /16 distinct sur tout le trajet, entrée ≠ sortie) **refuse donc de
-> construire une route** et **aucun message n'a encore transité le réseau
-> réel**. C'est exactement pour ça qu'un volontaire sur un **/16 différent** est
-> précieux aujourd'hui. La protection du **contenu** (chiffrement de bout en
-> bout) est, elle, solide et testable dès maintenant ; l'anonymat réseau ne sera
-> prouvé qu'une fois le réseau étalé sur plusieurs /16 et audité en externe.
-
-## Pourquoi héberger un relais ?
-
-Plus il y a de relais indépendants — et répartis sur des /16 différents — plus
-le réseau devient difficile à surveiller. Faire tourner un relais, c'est :
-
-- **Aucun accès aux messages** — tout est chiffré de bout en bout (X3DH +
-  Double Ratchet, classe Signal). Cette garantie-là est effective aujourd'hui.
-- **Personne ne devrait pouvoir savoir qui parle à qui** — c'est le but du
-  système. ⚠️ Cette propriété n'est réellement acquise **qu'une fois le réseau
-  étalé sur plusieurs /16** (voir la note d'état plus haut) ; ce n'est pas
-  encore prouvé en conditions réelles, ni audité par un tiers indépendant.
-- **Aucun risque légal type « nœud de sortie Tor »** — le réseau est fermé,
-  un relais ne se connecte jamais à l'Internet public.
-- **Pas d'impact sur ton ping en jeu** — quelques dizaines de kbps au
-  démarrage, débit plafonnable.
-
-## Installer un relais en une commande (Linux Ubuntu/Debian)
-
-Sur un hôte **joignable depuis Internet** (VPS, ou PC avec un port UDP
-redirigé) :
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/0x9Angel/gotham-relay/main/infra/scripts/install-relay.sh \
-  | sudo GOTHAM_ENROLL_TOKEN=<token-donné-par-l-opérateur> bash
-```
-
-Le script télécharge le binaire vérifié, configure l'**auto-enrôlement**
-(le relais s'annonce tout seul à l'annuaire), pose un service systemd durci,
-ouvre le firewall, et te dit si l'autorité t'a accepté. Détails et options
-(tier, port, pays, NAT…) dans **[docs/SETUP.md](docs/SETUP.md)**.
-
-> Il te faut le **token d'enrôlement** (phase de test fermée) — demande-le à
-> **Angel**, l'opérateur du réseau.
-
-## Télécharger le binaire (Windows / macOS / install manuelle)
-
-Binaires pré-compilés + empreinte `.sha256` sur la page
-**[Releases](https://github.com/0x9Angel/gotham-relay/releases/latest)** :
-
-| Plateforme | Fichier |
-|---|---|
-| Linux x86-64 | `gotham-relay-linux-x86_64` |
-| Windows x86-64 | `gotham-relay-windows-x86_64.exe` |
-| macOS (Apple Silicon) | `gotham-relay-macos-aarch64` |
-
-**Vérifie toujours le `.sha256`** avant de lancer (voir [docs/SETUP.md](docs/SETUP.md)).
-
-## Documentation
-
-| Doc | Pour quoi |
-|---|---|
-| [docs/SETUP.md](docs/SETUP.md) | **Installer et lancer un relais** : one-liner, install manuelle, clé, redirection de port, options de débit, auto-enrôlement. |
-| [docs/AUDIT.md](docs/AUDIT.md) | **« Je n'ai pas confiance, prouve-le »** — ce qu'un relais peut et ne peut pas faire, avec renvois ligne à ligne au code. |
-| [docs/DEPLOY.md](docs/DEPLOY.md) | Déploiement multi-machines / VPS pour les opérateurs avancés. |
-
-## Code source du relais
-
-Le code du relais est dans ce dépôt : [crypto-gotham-relay/](crypto-gotham-relay/).
-Tu peux le lire intégralement — c'est exactement le binaire que tu exécutes. La
-documentation [docs/AUDIT.md](docs/AUDIT.md) renvoie ligne à ligne aux fichiers
-de cette crate pour prouver chaque garantie.
-
-Le **cœur du protocole** (mixnet Sphinx + crypto post-quantique, crate
-`crypto-gotham`) reste privé le temps de finaliser l'app : le relais en dépend,
-donc cette crate ne **compile pas** de façon autonome depuis ce dépôt. Pour
-vérifier le binaire que tu reçois, **compare son empreinte SHA-256** à celle
-publiée avec chaque build (le script le fait automatiquement) ; pour un rebuild
-complet et indépendant, demande l'accès à la source complète.
+Gotham is a post-quantum-hybrid mixnet (X25519 + ML-KEM-768 per hop, fixed
+2048-byte Sphinx packets, Loopix-style timed mixing). A relay peels exactly one
+encryption layer off each packet and forwards it — it never sees who is talking
+to whom, and never sees message content.
 
 ---
 
-© 2026 Angel. Documentation publiée pour les volontaires du réseau Gotham.
-Le code du relais est distribué sous licence **AGPL-3.0-or-later**.
+## Install (one command)
+
+You need a machine that is reachable from the internet: a **VPS/cloud host**
+(public IP), or a **home computer behind a router that supports UPnP** (most
+do). One UDP port is opened for you.
+
+**Linux** (Debian/Ubuntu/Arch/Fedora/openSUSE) — run as root:
+```bash
+curl -fsSL https://raw.githubusercontent.com/0x9Angel/gotham-relay/main/infra/scripts/install-relay.sh | sudo bash
+```
+
+**macOS** — run with sudo:
+```bash
+curl -fsSL https://raw.githubusercontent.com/0x9Angel/gotham-relay/main/infra/scripts/install-relay-macos.sh | sudo bash
+```
+
+**Windows** — in an **elevated** PowerShell (Run as Administrator):
+```powershell
+irm https://raw.githubusercontent.com/0x9Angel/gotham-relay/main/infra/scripts/install-relay.ps1 | iex
+```
+
+That's it. The installer downloads the correct binary for your OS/CPU, verifies
+its SHA-256, generates a relay identity key, opens the firewall, and installs a
+background service that **starts automatically at every boot**. It then enrolls
+with the directory authority and joins the network on its own.
+
+When it finishes it prints your relay's public key and whether enrollment was
+accepted. Nothing else to do.
+
+---
+
+## Options (all optional)
+
+Set these as environment variables before running if you want to override the
+defaults — you don't need any of them:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `GOTHAM_TIER` | `mix` | `entry`, `mix`, or `exit`. **`mix`** (a middle hop that sees neither sender nor recipient) is the safest role for a volunteer. |
+| `GOTHAM_PORT` | `443` | UDP port to listen on and advertise. |
+| `GOTHAM_ADVERTISE_IP` | auto | Your public IP. Auto-detected (or auto-mapped via UPnP on macOS/Windows). Set it only if you port-forward manually. |
+| `GOTHAM_COUNTRY` | — | ISO code to publish for transparency (e.g. `FR`). |
+| `GOTHAM_OPERATOR` | — | A public nickname (transparency only). |
+
+Example: `curl -fsSL …/install-relay.sh | sudo GOTHAM_TIER=mix GOTHAM_COUNTRY=FR bash`
+
+---
+
+## Verify before you trust
+
+Every release binary ships a `.sha256` sidecar, which the installer checks
+automatically. Because the relay is **open source (AGPL-3.0)**, its source is here for you to
+read and audit, and the installer's SHA-256 check is your tamper seal on the
+download.
+
+## Requirements & reachability
+
+The authority must be able to reach your advertised `IP:port/UDP` to confirm
+your relay is live (a proof-of-presence probe). If enrollment isn't confirmed,
+the usual cause is that your UDP port isn't reachable from the internet —
+a missing router port-forward, or **CGNAT** (your ISP double-NATs you), which
+a home relay can't currently work around.
+
+## Manage the relay
+
+- **Linux:** `systemctl status crypto-gotham-relay` · `journalctl -u crypto-gotham-relay -f`
+- **macOS:** `tail -F /usr/local/var/gotham-relay/relay.log`
+- **Windows:** `Get-ScheduledTask GothamRelay | Get-ScheduledTaskInfo`
+
+---
+
+## Honest status
+
+This is a young network. The relay software is hardened (memory-safe Rust,
+`forbid(unsafe)`, fuzzed parsers, CI-tested on Linux/macOS/Windows), but
+**anonymity from mixing is only as strong as the number of independent relays
+and operators.** Until the network is large and diverse, treat its guarantees
+as best-effort, not absolute. There is no such thing as 100% anonymity — run a
+relay to help, not to bet your life on it today.
+
+## License
+
+**AGPL-3.0-or-later** — see [`LICENSE`](LICENSE). Running a *modified* relay as
+a network service obliges you to publish your modified source under the AGPL.

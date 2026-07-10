@@ -1,6 +1,6 @@
 [Unit]
 Description=Gotham mixnet relay (Crypto project)
-Documentation=https://github.com/0x9Angel/gotham-relay/blob/main/README.md
+Documentation=https://github.com/0x9Angel/gotham-relay#readme
 After=network-online.target
 Wants=network-online.target
 

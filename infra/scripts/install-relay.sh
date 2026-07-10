@@ -7,15 +7,15 @@
 # auto-enrollment so the relay announces itself to the directory authority and
 # joins the network on its own — no manual directory editing.
 #
-# USAGE (run as root):
-#   curl -fsSL https://raw.githubusercontent.com/0x9Angel/gotham-relay/main/infra/scripts/install-relay.sh \
-#     | sudo GOTHAM_ENROLL_TOKEN=<token-from-operator> bash
+# USAGE (run as root) — no token needed, enrollment is open:
+#   curl -fsSL https://raw.githubusercontent.com/0x9Angel/gotham-relay/main/infra/scripts/install-relay.sh | sudo bash
 #
 # or, after cloning the repo:
-#   sudo GOTHAM_ENROLL_TOKEN=<token> bash infra/scripts/install-relay.sh
+#   sudo bash infra/scripts/install-relay.sh
 #
-# CONFIG (environment variables):
-#   GOTHAM_ENROLL_TOKEN   REQUIRED. Bearer token the operator gives you.
+# CONFIG (environment variables — ALL OPTIONAL):
+#   GOTHAM_ENROLL_TOKEN   Only if the authority runs in closed/token mode.
+#                         Enrollment is OPEN by default — you do NOT need one.
 #   GOTHAM_AUTHORITY_URL  Directory authority base URL.
 #                         Default: http://144.24.205.188:8443
 #   GOTHAM_TIER           entry | mix | exit. Default: mix
@@ -47,7 +47,11 @@ OPERATOR="${GOTHAM_OPERATOR:-}"
 ENROLL_TOKEN="${GOTHAM_ENROLL_TOKEN:-}"
 
 REPO="0x9Angel/gotham-relay"
-ASSET="gotham-relay-linux-x86_64"
+case "$(uname -m)" in
+  x86_64|amd64)  ASSET="gotham-relay-linux-x86_64" ;;
+  aarch64|arm64) ASSET="gotham-relay-linux-aarch64" ;;
+  *) echo "[!] unsupported CPU arch: $(uname -m). Build from source (see docs/gotham/README.md)."; exit 1 ;;
+esac
 INSTALL_DIR=/opt/gotham
 BIN="$INSTALL_DIR/bin/gotham-relay"
 STATE_DIR="$INSTALL_DIR/state"
@@ -57,20 +61,24 @@ LOG_DIR=/var/log/gotham
 RELAY_USER=gotham
 
 # ─── Sanity checks ──────────────────────────────────────────────────────
-[[ "$(id -u)" -eq 0 ]] || { echo "Run as root: sudo GOTHAM_ENROLL_TOKEN=... bash $0"; exit 1; }
-[[ -n "$ENROLL_TOKEN" ]] || {
-    echo "[!] GOTHAM_ENROLL_TOKEN is required. Ask the project operator for the"
-    echo "    closed-test enrollment token, then run:"
-    echo "      sudo GOTHAM_ENROLL_TOKEN=<token> bash $0"
-    exit 1
-}
+[[ "$(id -u)" -eq 0 ]] || { echo "Run as root: sudo bash $0"; exit 1; }
 case "$TIER" in entry|mix|exit) ;; *) echo "[!] GOTHAM_TIER must be entry|mix|exit (got '$TIER')"; exit 1;; esac
-command -v apt-get &>/dev/null || { echo "[!] This installer targets Debian/Ubuntu (apt). For other distros, see docs/SETUP.md."; exit 1; }
-
 echo "[1/7] Installing dependencies..."
-export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq
-apt-get install -qq -y --no-install-recommends curl ca-certificates ufw libcap2-bin
+if command -v apt-get &>/dev/null; then
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -qq
+    apt-get install -qq -y --no-install-recommends curl ca-certificates ufw libcap2-bin
+elif command -v pacman &>/dev/null; then
+    pacman -Sy --needed --noconfirm curl ca-certificates libcap >/dev/null
+elif command -v dnf &>/dev/null; then
+    dnf install -y -q curl ca-certificates libcap >/dev/null
+elif command -v zypper &>/dev/null; then
+    zypper --non-interactive install -y curl ca-certificates libcap-progs >/dev/null
+else
+    echo "[!] No supported package manager (apt/pacman/dnf/zypper). Install curl + libcap"
+    echo "    manually, then re-run. (systemd is required for the service.)"
+    exit 1
+fi
 
 echo "[2/7] Creating $RELAY_USER system user..."
 id "$RELAY_USER" &>/dev/null || useradd --system --no-create-home --shell /usr/sbin/nologin "$RELAY_USER"
@@ -121,9 +129,16 @@ else
     curl -fsSL "https://raw.githubusercontent.com/$REPO/main/infra/systemd/crypto-gotham-relay.service" \
         -o /etc/systemd/system/crypto-gotham-relay.service
 fi
-ufw allow 22/tcp comment 'SSH' >/dev/null 2>&1 || true
-ufw allow "$PORT"/udp comment 'Gotham QUIC relay' >/dev/null 2>&1 || true
-yes | ufw enable >/dev/null 2>&1 || true
+if command -v ufw &>/dev/null; then
+    ufw allow 22/tcp comment 'SSH' >/dev/null 2>&1 || true
+    ufw allow "$PORT"/udp comment 'Gotham QUIC relay' >/dev/null 2>&1 || true
+    yes | ufw enable >/dev/null 2>&1 || true
+elif command -v firewall-cmd &>/dev/null; then
+    firewall-cmd --permanent --add-port="$PORT"/udp >/dev/null 2>&1 || true
+    firewall-cmd --reload >/dev/null 2>&1 || true
+else
+    echo "    (no ufw/firewalld detected — make sure UDP $PORT is open in your firewall)"
+fi
 systemctl daemon-reload
 systemctl enable --now crypto-gotham-relay.service
 
