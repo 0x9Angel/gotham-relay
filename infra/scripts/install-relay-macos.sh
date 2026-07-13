@@ -16,6 +16,9 @@
 #   GOTHAM_ADVERTISE_IP  Public IP peers reach you on. If UNSET, the relay
 #                        auto-maps its port and detects its public address via
 #                        UPnP-IGD (home routers) — no manual port-forward.
+#   GOTHAM_RENDEZVOUS    auto | on | off. Default auto: enrol via a rendezvous
+#                        point (RFC B3) when no reachable public address is
+#                        found — lets a Mac on 4G/5G / CGNAT be a relay.
 set -euo pipefail
 
 AUTHORITY_URL="${GOTHAM_AUTHORITY_URL:-http://144.24.205.188:8443}"
@@ -53,8 +56,36 @@ echo "[2/4] Generating relay identity (if absent)…"
 chmod 600 "$KEYFILE"
 PUBKEY="$("$BIN" pubkey --key-file "$KEYFILE")"
 
-# Advertise address: explicit if given, else let the binary auto-map via UPnP.
-if [[ -n "${GOTHAM_ADVERTISE_IP:-}" ]]; then
+# Decide DIRECT vs RENDEZVOUS (RFC B3 — behind CGNAT / mobile 4G-5G / broken
+# UPnP: keep an OUTBOUND tunnel to a public rendezvous relay, no inbound needed).
+PUB_IP="$(curl -fsSL --max-time 8 https://api.ipify.org || true)"
+MODE="direct"
+case "${GOTHAM_RENDEZVOUS:-auto}" in
+  on|1|true)   MODE="rendezvous" ;;
+  off|0|false) MODE="direct" ;;
+  *) if [[ -n "${GOTHAM_ADVERTISE_IP:-}" ]]; then MODE="direct"          # operator asserts a reachable addr
+     elif [[ -n "$PUB_IP" ]] && ifconfig 2>/dev/null | grep -qw "$PUB_IP"; then MODE="direct"  # public IP on an interface
+     else MODE="rendezvous"; fi ;;                                        # behind NAT/CGNAT
+esac
+
+if [[ "$MODE" == "rendezvous" ]]; then
+    echo "    No reachable public address — enrolling via a RENDEZVOUS point (RFC B3, works behind CGNAT/4G-5G)."
+    DIR_JSON="$(curl -fsSL --max-time 10 "$AUTHORITY_URL/directory" || true)"
+    R_LINE="$(printf '%s' "$DIR_JSON" | tr '{' '\n' | grep '"rendezvous_capable":true' | head -1)"
+    R_KEM="$(printf '%s'  "$R_LINE" | sed -n 's/.*"kem_pubkey_hex":"\([0-9a-fA-F]*\)".*/\1/p')"
+    R_ADDR="$(printf '%s' "$R_LINE" | sed -n 's/.*"addr":"\([0-9.:]*\)".*/\1/p')"
+    if [[ -z "$R_KEM" || -z "$R_ADDR" ]]; then
+        echo "[!] No rendezvous point is currently available from $AUTHORITY_URL."
+        echo "    An operator must run a public relay with --rendezvous-capable, or set"
+        echo "    GOTHAM_ADVERTISE_IP=<reachable.ip> if you CAN port-forward UDP $PORT."
+        exit 1
+    fi
+    echo "    Rendezvous relay: $R_ADDR"
+    # rendezvous mode: NO --advertise-addr (a CGNAT relay has no dialable address);
+    # the PoP key is auto-fetched from /pop.
+    ADVERTISE_XML="    <string>--rendezvous-key</string><string>$R_KEM</string><string>--rendezvous-addr</string><string>$R_ADDR</string>"
+    ADVERTISE_MSG="via rendezvous $R_ADDR (CGNAT/B3)"
+elif [[ -n "${GOTHAM_ADVERTISE_IP:-}" ]]; then
     ADVERTISE_XML="    <string>--advertise-addr</string><string>${GOTHAM_ADVERTISE_IP}:$PORT</string>"
     ADVERTISE_MSG="${GOTHAM_ADVERTISE_IP}:$PORT (manual)"
 else

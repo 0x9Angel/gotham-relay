@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # install-relay.sh — one-command, AUTONOMOUS Gotham mixnet relay installer.
 #
-# For volunteer relay operators on a reachable Ubuntu/Debian host (a VPS, or a
-# home box where you can port-forward one UDP port). No source build: it
-# downloads the prebuilt, checksum-verified relay binary and wires up
-# auto-enrollment so the relay announces itself to the directory authority and
-# joins the network on its own — no manual directory editing.
+# For volunteer relay operators on ANY Ubuntu/Debian host — a public VPS, a home
+# box with a port-forward, OR a machine behind CGNAT / mobile 4G-5G / broken UPnP
+# (it auto-falls back to RFC B3 rendezvous mode, keeping an OUTBOUND tunnel to a
+# public rendezvous relay — no public IP or port-forward needed). No source
+# build: it downloads the prebuilt, checksum-verified relay binary and wires up
+# auto-enrollment so the relay joins the network on its own.
 #
 # USAGE (run as root) — no token needed, enrollment is open:
 #   curl -fsSL https://raw.githubusercontent.com/0x9Angel/gotham-relay/main/infra/scripts/install-relay.sh | sudo bash
@@ -23,7 +24,10 @@
 #                          the safest role for a volunteer).
 #   GOTHAM_PORT           UDP listen + advertise port. Default: 443
 #   GOTHAM_ADVERTISE_IP   Public IP peers reach you on. Default: auto-detected.
-#                         Set this explicitly if you are behind NAT/port-forward.
+#                         Set this explicitly if you port-forward UDP behind NAT.
+#   GOTHAM_RENDEZVOUS     auto | on | off. Default auto: use a rendezvous point
+#                         (RFC B3) when no reachable public address is found —
+#                         this is what lets a 4G/5G / CGNAT box be a relay.
 #   GOTHAM_COUNTRY        ISO 3166-1 code to publish (e.g. FR). Optional.
 #   GOTHAM_OPERATOR       Public nickname (transparency only). Optional.
 #
@@ -99,18 +103,62 @@ chown -R "$RELAY_USER:$RELAY_USER" "$STATE_DIR" "$LOG_DIR"
 [[ -f "$KEYFILE" ]] || sudo -u "$RELAY_USER" "$BIN" keygen --key-file "$KEYFILE"
 PUBKEY="$(sudo -u "$RELAY_USER" "$BIN" pubkey --key-file "$KEYFILE")"
 
-echo "[5/7] Detecting public IP + writing config..."
+echo "[5/7] Determining reachability (direct vs rendezvous)..."
 ADVERTISE_IP="${GOTHAM_ADVERTISE_IP:-$(curl -fsSL --max-time 8 https://api.ipify.org || true)}"
-[[ -n "$ADVERTISE_IP" ]] || { echo "[!] Could not auto-detect a public IP. Re-run with GOTHAM_ADVERTISE_IP=<your.public.ip>"; exit 1; }
+
 EXTRA=""
 [[ -n "$COUNTRY"  ]] && EXTRA+=" --country $COUNTRY"
 [[ -n "$OPERATOR" ]] && EXTRA+=" --operator $OPERATOR"
+
+# Decide DIRECT (we have a reachable public address) vs RENDEZVOUS (RFC B3 —
+# behind CGNAT / mobile 4G-5G / broken UPnP: keep an OUTBOUND tunnel to a public
+# rendezvous relay, no inbound reachability needed). GOTHAM_RENDEZVOUS=on|off|auto.
+MODE="direct"
+case "${GOTHAM_RENDEZVOUS:-auto}" in
+  on|1|true)   MODE="rendezvous" ;;
+  off|0|false) MODE="direct" ;;
+  *) # auto-detect
+    if [[ -n "${GOTHAM_ADVERTISE_IP:-}" ]]; then
+        MODE="direct"          # operator asserts a reachable address / port-forward
+    elif [[ -n "$ADVERTISE_IP" ]] && { ip -o addr show 2>/dev/null || ifconfig 2>/dev/null; } | grep -qw "$ADVERTISE_IP"; then
+        MODE="direct"          # our public IP is bound to a local interface → directly reachable
+    else
+        MODE="rendezvous"      # no public IP on this host and none asserted → behind NAT/CGNAT
+    fi ;;
+esac
+
+if [[ "$MODE" == "rendezvous" ]]; then
+    echo "    No reachable public address — enrolling via a RENDEZVOUS point"
+    echo "    (RFC B3: works behind CGNAT / mobile 4G-5G / broken UPnP, no port-forward)."
+    DIR_JSON="$(curl -fsSL --max-time 10 "$AUTHORITY_URL/directory" || true)"
+    # Pick a relay advertising rendezvous_capable. The directory is compact JSON;
+    # split per-relay on '{' and match the flag, then pull its kem + addr.
+    R_LINE="$(printf '%s' "$DIR_JSON" | tr '{' '\n' | grep '"rendezvous_capable":true' | head -1)"
+    R_KEM="$(printf '%s'  "$R_LINE" | sed -n 's/.*"kem_pubkey_hex":"\([0-9a-fA-F]\{64\}\)".*/\1/p')"
+    R_ADDR="$(printf '%s' "$R_LINE" | sed -n 's/.*"addr":"\([0-9.:]\{7,\}\)".*/\1/p')"
+    if [[ -z "$R_KEM" || -z "$R_ADDR" ]]; then
+        echo "[!] No rendezvous point is currently available from $AUTHORITY_URL."
+        echo "    An operator must run a public relay with --rendezvous-capable, OR"
+        echo "    set GOTHAM_ADVERTISE_IP=<reachable.ip> if you CAN port-forward UDP $PORT."
+        exit 1
+    fi
+    echo "    Rendezvous relay: $R_ADDR"
+    # The relay auto-fetches the authority PoP key from /pop for the possession
+    # proof; nothing to paste. advertise-addr is IGNORED in rendezvous mode but
+    # must be non-empty (else systemd swallows the following flag) — placeholder.
+    EXTRA+=" --rendezvous-key $R_KEM --rendezvous-addr $R_ADDR"
+    ADVERTISE_ADDR="${ADVERTISE_IP:-127.0.0.1}:$PORT"
+else
+    [[ -n "$ADVERTISE_IP" ]] || { echo "[!] Could not auto-detect a public IP. Re-run with GOTHAM_ADVERTISE_IP=<your.public.ip>, or GOTHAM_RENDEZVOUS=on to use a rendezvous point."; exit 1; }
+    echo "    Directly reachable — advertising $ADVERTISE_IP:$PORT/udp."
+    ADVERTISE_ADDR="$ADVERTISE_IP:$PORT"
+fi
 
 # relay.env holds the token — keep it readable only by root + the relay user.
 cat > "$ENVFILE" <<EOF
 GOTHAM_ENROLL_TOKEN=$ENROLL_TOKEN
 GOTHAM_AUTHORITY_URL=$AUTHORITY_URL
-GOTHAM_ADVERTISE_ADDR=$ADVERTISE_IP:$PORT
+GOTHAM_ADVERTISE_ADDR=$ADVERTISE_ADDR
 GOTHAM_PORT=$PORT
 GOTHAM_TIER=$TIER
 GOTHAM_EXTRA_ARGS=$EXTRA
@@ -129,15 +177,21 @@ else
     curl -fsSL "https://raw.githubusercontent.com/$REPO/main/infra/systemd/crypto-gotham-relay.service" \
         -o /etc/systemd/system/crypto-gotham-relay.service
 fi
-if command -v ufw &>/dev/null; then
-    ufw allow 22/tcp comment 'SSH' >/dev/null 2>&1 || true
-    ufw allow "$PORT"/udp comment 'Gotham QUIC relay' >/dev/null 2>&1 || true
-    yes | ufw enable >/dev/null 2>&1 || true
-elif command -v firewall-cmd &>/dev/null; then
-    firewall-cmd --permanent --add-port="$PORT"/udp >/dev/null 2>&1 || true
-    firewall-cmd --reload >/dev/null 2>&1 || true
+# Rendezvous mode is OUTBOUND-only — no inbound port to open (that is the whole
+# point of B3). Only open the UDP port when we advertise a directly-reachable one.
+if [[ "$MODE" == "direct" ]]; then
+    if command -v ufw &>/dev/null; then
+        ufw allow 22/tcp comment 'SSH' >/dev/null 2>&1 || true
+        ufw allow "$PORT"/udp comment 'Gotham QUIC relay' >/dev/null 2>&1 || true
+        yes | ufw enable >/dev/null 2>&1 || true
+    elif command -v firewall-cmd &>/dev/null; then
+        firewall-cmd --permanent --add-port="$PORT"/udp >/dev/null 2>&1 || true
+        firewall-cmd --reload >/dev/null 2>&1 || true
+    else
+        echo "    (no ufw/firewalld detected — make sure UDP $PORT is open in your firewall)"
+    fi
 else
-    echo "    (no ufw/firewalld detected — make sure UDP $PORT is open in your firewall)"
+    echo "    Rendezvous mode: outbound-only, no inbound firewall rule needed."
 fi
 systemctl daemon-reload
 systemctl enable --now crypto-gotham-relay.service
@@ -147,7 +201,7 @@ ENROLLED=0
 for _ in $(seq 1 6); do
     sleep 5
     if grep -qi "enroll.*ok\|enrolled\|directory updated\|announced" "$LOG_DIR/relay.log" 2>/dev/null; then ENROLLED=1; break; fi
-    if grep -qi "probe failed\|enroll rejected\|liveness" "$LOG_DIR/relay.log" 2>/dev/null; then break; fi
+    if grep -qi "probe failed\|enroll rejected\|liveness\|does not host\|rendezvous.*fail" "$LOG_DIR/relay.log" 2>/dev/null; then break; fi
 done
 
 echo
@@ -156,13 +210,23 @@ if [[ "$ENROLLED" -eq 1 ]]; then
     echo " Gotham relay is LIVE and ENROLLED"
 else
     echo " Gotham relay installed — enrollment NOT yet confirmed"
-    echo " Most common cause: your UDP port $PORT is not reachable from the"
-    echo " internet (router port-forward missing, or CGNAT). The authority"
-    echo " must be able to reach $ADVERTISE_IP:$PORT/udp to accept you."
+    if [[ "$MODE" == "direct" ]]; then
+        echo " Most common cause: UDP port $PORT is not reachable from the internet"
+        echo " (router port-forward missing, or CGNAT). The authority must reach"
+        echo " $ADVERTISE_ADDR/udp. If you are behind CGNAT / 4G-5G, re-run with"
+        echo " GOTHAM_RENDEZVOUS=on to enrol via a rendezvous point instead."
+    else
+        echo " In rendezvous mode: check the rendezvous relay ${R_ADDR:-?} is up and"
+        echo " that outbound UDP to it is not blocked. Logs: tail -F $LOG_DIR/relay.log"
+    fi
 fi
 echo "============================================================"
 echo " Public key : $PUBKEY"
-echo " Advertised : $ADVERTISE_IP:$PORT/udp   (tier: $TIER)"
+if [[ "$MODE" == "direct" ]]; then
+    echo " Advertised : $ADVERTISE_ADDR/udp   (tier: $TIER, direct)"
+else
+    echo " Reachable  : via rendezvous ${R_ADDR:-?}   (tier: $TIER, CGNAT/B3)"
+fi
 echo " Authority  : $AUTHORITY_URL"
 echo
 echo " Live logs  : tail -F $LOG_DIR/relay.log"

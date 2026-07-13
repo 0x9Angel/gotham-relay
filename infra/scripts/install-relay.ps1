@@ -19,6 +19,9 @@
     GOTHAM_PORT          default 443
     GOTHAM_ADVERTISE_IP  optional; if unset the relay auto-maps its port and
                          detects its public IP via UPnP-IGD (home routers).
+    GOTHAM_RENDEZVOUS    auto | on | off. Default auto: enrol via a rendezvous
+                         point (RFC B3) when no reachable public address is
+                         found - lets a Windows box on 4G/5G / CGNAT be a relay.
 #>
 $ErrorActionPreference = "Stop"
 
@@ -48,26 +51,61 @@ Write-Host "[2/5] Generating relay identity (if absent)..."
 if (-not (Test-Path $Key)) { & $Bin keygen --key-file $Key | Out-Null }
 $PubKey = (& $Bin pubkey --key-file $Key)
 
-Write-Host "[3/5] Detecting public address + building launch command..."
-# Address peers reach us on. Prefer an explicit override; else auto-detect the
-# public IP (works on a VPS and on a home box). We do NOT rely on UPnP for the
-# address: a cloud host has no UPnP-IGD gateway and the relay would otherwise
-# crash with "no UPnP-IGD gateway found on the LAN". Same approach as Linux.
+Write-Host "[3/5] Determining reachability (direct vs rendezvous)..."
+# Public IP (best-effort). Not fatal: a CGNAT box has no reachable public address
+# and falls back to a rendezvous point (RFC B3) below.
 $AdvIp = $env:GOTHAM_ADVERTISE_IP
 if (-not $AdvIp) {
     try   { $AdvIp = (Invoke-RestMethod -Uri "https://api.ipify.org" -TimeoutSec 8).ToString().Trim() }
     catch { $AdvIp = $null }
 }
-if (-not $AdvIp) {
-    throw "Could not detect a public IP (api.ipify.org unreachable). Re-run with it set: `$env:GOTHAM_ADVERTISE_IP='<your.public.ip>' then the install one-liner."
+
+# Decide DIRECT (we have a reachable public address) vs RENDEZVOUS (behind CGNAT
+# / mobile 4G-5G / broken UPnP: keep an OUTBOUND tunnel to a public rendezvous
+# relay, no inbound reachability needed). GOTHAM_RENDEZVOUS=on|off|auto.
+$Rdv = if ($env:GOTHAM_RENDEZVOUS) { $env:GOTHAM_RENDEZVOUS.ToLower() } else { "auto" }
+if ($Rdv -in @("on", "1", "true")) {
+    $Mode = "rendezvous"
+} elseif ($Rdv -in @("off", "0", "false")) {
+    $Mode = "direct"
+} elseif ($env:GOTHAM_ADVERTISE_IP) {
+    $Mode = "direct"                                    # operator asserts a reachable address
+} elseif ($AdvIp -and ((Get-NetIPAddress -ErrorAction SilentlyContinue).IPAddress -contains $AdvIp)) {
+    $Mode = "direct"                                    # our public IP is bound to a local interface
+} else {
+    $Mode = "rendezvous"                                # no public IP on this host -> behind NAT/CGNAT
 }
-$binArgs = @(
-    "run", "--key-file", $Key,
-    "--listen-host", "0.0.0.0", "--listen-port", $Port,
-    "--authority-url", $AuthUrl, "--tier", $Tier, "--heartbeat-secs", "60",
-    "--advertise-addr", "$($AdvIp):$Port"
-)
-$AdvMsg = "$($AdvIp):$Port"
+
+if ($Mode -eq "rendezvous") {
+    Write-Host "    No reachable public address - enrolling via a RENDEZVOUS point (RFC B3, works behind CGNAT/4G-5G)."
+    try   { $dir = Invoke-RestMethod -Uri "$AuthUrl/directory" -TimeoutSec 10 } catch { $dir = $null }
+    $rp = if ($dir) { $dir.doc.relays | Where-Object { $_.rendezvous_capable } | Select-Object -First 1 } else { $null }
+    if (-not $rp) {
+        throw "No rendezvous point available from $AuthUrl. An operator must run a public relay with --rendezvous-capable, or set `$env:GOTHAM_ADVERTISE_IP='<reachable.ip>' if you can port-forward UDP $Port."
+    }
+    Write-Host "    Rendezvous relay: $($rp.addr)"
+    # No --advertise-addr in rendezvous mode (a CGNAT relay has no dialable
+    # address); the authority PoP key is auto-fetched from /pop.
+    $binArgs = @(
+        "run", "--key-file", $Key,
+        "--listen-host", "0.0.0.0", "--listen-port", $Port,
+        "--authority-url", $AuthUrl, "--tier", $Tier, "--heartbeat-secs", "60",
+        "--rendezvous-key", $rp.kem_pubkey_hex, "--rendezvous-addr", $rp.addr
+    )
+    $AdvMsg = "via rendezvous $($rp.addr) (CGNAT/B3)"
+} else {
+    if (-not $AdvIp) {
+        throw "Could not detect a public IP (api.ipify.org unreachable). Re-run with `$env:GOTHAM_ADVERTISE_IP='<your.public.ip>', or `$env:GOTHAM_RENDEZVOUS='on' to use a rendezvous point."
+    }
+    Write-Host "    Directly reachable - advertising $($AdvIp):$Port/udp."
+    $binArgs = @(
+        "run", "--key-file", $Key,
+        "--listen-host", "0.0.0.0", "--listen-port", $Port,
+        "--authority-url", $AuthUrl, "--tier", $Tier, "--heartbeat-secs", "60",
+        "--advertise-addr", "$($AdvIp):$Port"
+    )
+    $AdvMsg = "$($AdvIp):$Port"
+}
 
 # Token (only in closed/token mode) via a MACHINE env var so it is not visible
 # in the task's command line. Open enrollment needs none.
@@ -87,8 +125,12 @@ Register-ScheduledTask -TaskName "GothamRelay" -Action $action -Trigger $trigger
     -Description "Gotham mixnet relay - auto-starts in the background at boot" | Out-Null
 
 Write-Host "[5/5] Firewall + start now..."
-New-NetFirewallRule -DisplayName "Gotham QUIC relay (UDP $Port)" -Direction Inbound `
-    -Protocol UDP -LocalPort $Port -Action Allow -ErrorAction SilentlyContinue | Out-Null
+# Rendezvous mode is OUTBOUND-only - no inbound port to open. Only open UDP when
+# we advertise a directly-reachable address.
+if ($Mode -eq "direct") {
+    New-NetFirewallRule -DisplayName "Gotham QUIC relay (UDP $Port)" -Direction Inbound `
+        -Protocol UDP -LocalPort $Port -Action Allow -ErrorAction SilentlyContinue | Out-Null
+}
 Start-ScheduledTask -TaskName "GothamRelay"
 
 Write-Host ""
@@ -96,18 +138,23 @@ Write-Host "============================================================"
 Write-Host " Gotham relay installed - starts automatically at every boot,"
 Write-Host " in the background (Scheduled Task: GothamRelay)."
 Write-Host " Public key : $PubKey"
-Write-Host " Advertised : $AdvMsg   (tier: $Tier, port $Port/udp)"
+Write-Host " Reachable  : $AdvMsg   (tier: $Tier, port $Port/udp)"
 Write-Host " Authority  : $AuthUrl"
 Write-Host " Status     : Get-ScheduledTask GothamRelay | Get-ScheduledTaskInfo"
 Write-Host " Stop/Start : Stop-ScheduledTask GothamRelay  /  Start-ScheduledTask GothamRelay"
 Write-Host " Uninstall  : irm https://raw.githubusercontent.com/$Repo/main/infra/scripts/uninstall-relay.ps1 | iex"
 Write-Host "============================================================"
 Write-Host ""
-Write-Host " REACHABILITY — the authority must reach you at $AdvMsg over UDP:" -ForegroundColor Cyan
-Write-Host "   * VPS / cloud:  open UDP $Port in your provider's firewall / security group."
-Write-Host "   * Home box:     forward UDP $Port on your router to this machine's LAN IP."
-Write-Host "   * Mobile hotspot / 4G-5G tethering / shared connection = CGNAT:"
-Write-Host "                   NO inbound reachability — you cannot host a relay this way."
+if ($Mode -eq "rendezvous") {
+    Write-Host " RENDEZVOUS mode (RFC B3): outbound-only tunnel to $($rp.addr) - works" -ForegroundColor Cyan
+    Write-Host " behind CGNAT / 4G-5G / broken UPnP. No port-forward needed."
+} else {
+    Write-Host " REACHABILITY - the authority must reach you at $AdvMsg over UDP:" -ForegroundColor Cyan
+    Write-Host "   * VPS / cloud:  open UDP $Port in your provider's firewall / security group."
+    Write-Host "   * Home box:     forward UDP $Port on your router to this machine's LAN IP."
+    Write-Host "   * Behind CGNAT / 4G-5G tethering / shared connection: re-run with"
+    Write-Host "                   `$env:GOTHAM_RENDEZVOUS='on' to enrol via a rendezvous point."
+}
 Write-Host ""
 Write-Host " Confirm you actually ENROLLED (run this now):" -ForegroundColor Cyan
 Write-Host "   irm https://raw.githubusercontent.com/0x9Angel/gotham-relay/main/infra/scripts/diagnose-relay.ps1 | iex"
