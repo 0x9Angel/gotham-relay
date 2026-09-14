@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Gotham-Commercial
-// Copyright (C) 2026 Lisan al-Gaib & ARRAKIS contributors.
+// Copyright (C) 2026 0x9Angel.
 
 //! Connection pool for outbound QUIC + Noise XK.
 //!
@@ -86,6 +86,11 @@ pub struct ConnectionPool {
     my_sk: [u8; 32],
     pool: Mutex<HashMap<PoolKey, Arc<PooledConnection>>>,
     max_size: usize,
+    /// RFC B3: live inbound rendezvous tunnels this relay hosts (empty unless it
+    /// serves as a rendezvous point). Threaded through the pool so the mixnet
+    /// forwarder can PUSH a `VIA_RENDEZVOUS` packet to a hosted CGNAT relay
+    /// instead of dialing it — same "outbound send" abstraction, different wire.
+    rendezvous: crate::rendezvous::RendezvousTable,
 }
 
 impl ConnectionPool {
@@ -100,7 +105,16 @@ impl ConnectionPool {
             my_sk,
             pool: Mutex::new(HashMap::new()),
             max_size: DEFAULT_MAX_SIZE,
+            rendezvous: crate::rendezvous::RendezvousTable::new(),
         }
+    }
+
+    /// The RFC B3 rendezvous table shared by this relay's accept loop (which
+    /// registers hosted CGNAT relays' tunnels) and its forwarder (which pushes
+    /// `VIA_RENDEZVOUS` packets down them).
+    #[must_use]
+    pub fn rendezvous(&self) -> &crate::rendezvous::RendezvousTable {
+        &self.rendezvous
     }
 
     /// Customize the pool's max entry count.
@@ -280,6 +294,9 @@ mod tests {
         let mut packet = vec![0u8; crypto_gotham::PACKET_SIZE];
         packet[..HEADER_LEN].copy_from_slice(&header.encode());
         packet[HEADER_LEN..HEADER_LEN + marker.len()].copy_from_slice(marker);
+        // Apply the (single) sender LIONESS layer so the 1-hop relay peels back
+        // to `marker` — mirrors `GothamClient::ship_path`.
+        crypto_gotham::lioness::encrypt(&sub_keys[0].k_payload, &mut packet[HEADER_LEN..]);
         packet
     }
 

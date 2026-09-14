@@ -1,108 +1,162 @@
-# Gotham relay
+# Gotham
 
-**Run a node of the Gotham mixnet. One command. No account, no token, no
-sign-up.** The network is made of volunteer relays like the one you are about
-to start — the more independent operators, the stronger everyone's anonymity.
+**A Sphinx/Loopix mixnet, in Rust.** Fixed-size packets, per-hop exponential
+delays, Poisson cover traffic, sealed sender, store-and-forward mailboxes with a
+possession proof, and a signed directory with k-of-n admission.
 
-Gotham is a post-quantum-hybrid mixnet (X25519 + ML-KEM-768 per hop, fixed
-2048-byte Sphinx packets, Loopix-style timed mixing). A relay peels exactly one
-encryption layer off each packet and forwards it — it never sees who is talking
-to whom, and never sees message content.
+Gotham is the anonymity network underneath [Crypto](#what-is-not-in-this-repo),
+an end-to-end encrypted messenger. **This repository is the network.** It is
+usable on its own: nothing here depends on the messenger.
 
 ---
 
-## Install (one command)
+## Honest preamble
 
-You need a machine that is reachable from the internet: a **VPS/cloud host**
-(public IP), or a **home computer behind a router that supports UPnP** (most
-do). One UDP port is opened for you.
+Read this before anything else.
 
-**Linux** (Debian/Ubuntu/Arch/Fedora/openSUSE) — run as root:
+- The network is **young**. Anonymity in a mixnet comes from the size of the
+  anonymity set — the number of independent relays and the volume of unrelated
+  traffic your messages hide in. A small deployment protects less than a large
+  one. This is a property of the deployment, not a checkbox in the code.
+- It has **not been audited by an independent third party**. Two internal
+  campaigns have been run. July 2026: 72 findings examined, 30 refuted by
+  counter-analysis, 42 confirmed, 30 fixed with a regression test each. August
+  2026, after deduplication against the first: 71 findings, of which **46 are
+  fixed and tested**, 6 reduced with the residual written down, and **19 still
+  open** — including the one rated critical below. The real open count is
+  higher and is honestly unknown: twelve findings left open by the July
+  campaign were never folded back into the register, and since the register
+  already deduplicated the two campaigns, nobody can say how many of those
+  twelve are already counted. Somewhere between 19 and 31. Internal is not independent,
+  and a count of findings fixed says nothing about the ones nobody has looked
+  for yet.
+- **One critical finding is open.** The per-hop MAC authenticates only one slot
+  of the routing block, so two colluding relays can tag a packet on the way in
+  and recognise it on the way out. It is not exploitable while every relay is
+  run by the same operator — which is the case today — and it must be closed by
+  a wire-format change before third-party relays are admitted. If you are
+  considering running a relay, this is the finding to ask about.
+- Some known limitations are structural and written down in
+  [`docs/README.md`](docs/README.md) rather than quietly omitted. One that used
+  to be listed here is no longer true and is corrected rather than quietly
+  dropped: β is **not** byte-identical between hops — it is re-randomised at
+  every hop, and a regression test covers every pair of hops. The open defect
+  is narrower and different: the per-hop MAC authenticates only one slot of the
+  routing block, which is the critical finding above.
+- **All three directory authorities are run by one person**, the author. The
+  2-of-3 quorum stops a single key from forging the relay list; it does not stop
+  a simultaneous seizure of all three hosts. Recruiting independent authority
+  operators is the network's declared first priority, and the reason it does not
+  yet route: path selection refuses two relays it cannot prove belong to
+  different operators, and there is only one.
+
+If you are evaluating this for anything where being wrong has consequences,
+start with the limitations, not the features.
+
+## What is in this repository
+
+| Crate | Role |
+|---|---|
+| `crypto-gotham` | Protocol core — Sphinx header, LIONESS payload, path selection, mailboxes, signed directory, enrollment |
+| `crypto-gotham-relay` | The relay daemon — QUIC + Noise XK transport, forwarding, cover traffic, rendezvous transport, SURB replies |
+| `crypto-gotham-directory` | Directory admission — k-of-n attestation, roster, gossip |
+| `crypto-gotham-authority` | Directory authority — signs the relay list, issues TURN credentials |
+
+## Design
+
+- **Sphinx packets**, fixed at 2048 bytes with a 384-byte header, 3 to 5 hops.
+  Length, type and destination are indistinguishable to an observer.
+- **LIONESS** wide-block payload encryption: flipping one bit destroys the whole
+  block, so the payload is non-malleable.
+- **Loopix delays** drawn per hop by the sender, plus Poisson cover traffic, so a
+  real send is not distinguishable by timing from a decoy.
+- **Sealed sender** — the entry relay does not learn who is sending.
+- **Enforced path diversity** — entry and exit may not share an operator, an
+  IPv4 /16, or an IPv6 /48.
+- **Store-and-forward mailboxes** addressed by a derived id, with a DH-MAC
+  possession proof: holding a recipient's *public* key is not enough to read or
+  delete their mail. The id is **not unlinkable**, and it would be wrong to
+  imply otherwise: it is a hash of the recipient's public key, and that key
+  travels in every invitation and every contact card. Anyone holding someone's
+  contact card can compute their mailbox id — and, from a seized relay, show
+  that this person received mail there and when.
+- **SURBs** — single-use reply blocks, so a recipient can collect mail without
+  revealing their IP to the host. Implemented, but **not reachable on the
+  current fleet**: the anonymous fetch needs a routable path, and with too few
+  relays every fetch falls back to a direct connection in which the host does
+  see the recipient's IP. It starts working when the fleet can route.
+- **Rendezvous transport (RFC B3)** — a relay behind CGNAT (mobile, consumer
+  ISP) joins with no inbound port and no public address at all.
+- **Signed directory** with anti-rollback, and **k-of-n admission** so no single
+  authority key controls the route set.
+
+The protocol notes are in [`docs/`](docs/), including the RFC for the rendezvous
+transport and the k-of-n admission design.
+
+## Build
+
 ```bash
-curl -fsSL https://raw.githubusercontent.com/0x9Angel/gotham-relay/main/infra/scripts/install-relay.sh | sudo bash
+cargo build --release --workspace
+cargo test --workspace
 ```
 
-**macOS** — run with sudo:
-```bash
-curl -fsSL https://raw.githubusercontent.com/0x9Angel/gotham-relay/main/infra/scripts/install-relay-macos.sh | sudo bash
-```
+Rust stable. No C toolchain beyond what `ring` needs.
 
-**Windows** — in an **elevated** PowerShell (Run as Administrator):
-```powershell
-irm https://raw.githubusercontent.com/0x9Angel/gotham-relay/main/infra/scripts/install-relay.ps1 | iex
-```
+## Running a relay
 
-That's it. The installer downloads the correct binary for your OS/CPU, verifies
-its SHA-256, generates a relay identity key, opens the firewall, and installs a
-background service that **starts automatically at every boot**. It then enrolls
-with the directory authority and joins the network on its own.
+Volunteer relays are what make the network worth anything. **Read these three
+before you install anything** — they say what you are agreeing to operate, what
+your machine will hold, and what to do if someone comes asking:
 
-When it finishes it prints your relay's public key and whether enrollment was
-accepted. Nothing else to do.
+- [`OPERATOR-GUIDE.md`](OPERATOR-GUIDE.md) — what a relay does, what each tier
+  sees, what we ask of you, and what you are trusting us with today
+- [`LOGGING-POLICY.md`](LOGGING-POLICY.md) — an inventory, checked against the
+  source, of everything a relay records and keeps
+- [`ABUSE-FAQ.md`](ABUSE-FAQ.md) — complaints, legal requests, and a reply
+  template for your hosting provider
 
----
+If you have a machine that stays on — a VPS, a home server, a Raspberry Pi — see
+also [`docs/running-a-cgnat-relay.md`](docs/running-a-cgnat-relay.md) and the
+installers in [`infra/scripts/`](infra/scripts/).
 
-## Options (all optional)
+`GOTHAM_OPERATOR` is required and the installer refuses without it: an
+unlabelled relay is never selected by path selection, so it would burn your
+bandwidth while looking perfectly healthy.
 
-Set these as environment variables before running if you want to override the
-defaults — you don't need any of them:
+A relay behind CGNAT needs **no port forwarding**: it keeps an outbound tunnel to
+a public rendezvous relay and is reachable through it.
 
-| Variable | Default | Meaning |
-|---|---|---|
-| `GOTHAM_TIER` | `mix` | `entry`, `mix`, or `exit`. **`mix`** (a middle hop that sees neither sender nor recipient) is the safest role for a volunteer. |
-| `GOTHAM_PORT` | `443` | UDP port to listen on and advertise. |
-| `GOTHAM_ADVERTISE_IP` | auto | Your public IP. Auto-detected (or auto-mapped via UPnP on macOS/Windows). Set it only if you port-forward manually. |
-| `GOTHAM_COUNTRY` | — | ISO code to publish for transparency (e.g. `FR`). |
-| `GOTHAM_OPERATOR` | — | A public nickname (transparency only). |
+Bandwidth and packet rate are both capped by flags (`--max-pps`,
+`--max-bytes-per-day`), so a relay on a metered connection stays inside a budget
+you choose.
 
-Example: `curl -fsSL …/install-relay.sh | sudo GOTHAM_TIER=mix GOTHAM_COUNTRY=FR bash`
+## Reporting a vulnerability
 
----
+Mail **crypto.app.organisation@proton.me**. Reports are handled as a priority and
+there will be no legal action against anyone acting in good faith.
 
-## Verify before you trust
+Please give us a reasonable window to ship a fix before publishing.
 
-Every release binary ships a `.sha256` sidecar, which the installer checks
-automatically. Because the relay is **open source (AGPL-3.0)**, its source is here for you to
-read and audit, and the installer's SHA-256 check is your tamper seal on the
-download.
+## Licence
 
-## Requirements & reachability
+**AGPL-3.0-or-later**, or a separate commercial licence.
 
-The authority must be able to reach your advertised `IP:port/UDP` to confirm
-your relay is live (a proof-of-presence probe). If enrollment isn't confirmed,
-the usual cause is that your UDP port isn't reachable from the internet —
-a missing router port-forward, or **CGNAT** (your ISP double-NATs you), which
-a home relay can't currently work around.
+The AGPL is deliberate: §13 closes the network-service loophole, so anyone who
+runs a modified Gotham as a service must offer their changes to its users. An
+anonymity network whose operators can quietly fork it into something else is not
+an anonymity network.
 
-## Manage the relay
+See [`LICENSE`](LICENSE). For commercial terms, mail the address above.
 
-- **Linux:** `systemctl status crypto-gotham-relay` · `journalctl -u crypto-gotham-relay -f`
-- **macOS:** `tail -F /usr/local/var/gotham-relay/relay.log`
-- **Windows:** `Get-ScheduledTask GothamRelay | Get-ScheduledTaskInfo`
+## What is *not* in this repository
 
-## Uninstall
+The **Crypto application** — the messenger client, its X3DH and Double Ratchet
+implementation, the encrypted store, and the enterprise integrations — is a
+separate, proprietary product and is not published here.
 
-Removes the service, binary, config, firewall rule, and identity key.
+That split is deliberate and stated plainly rather than blurred: the network is
+open so it can be inspected, extended and run by anyone, because a network
+nobody can audit is not one you should route sensitive traffic through. The
+application is the commercial product.
 
-- **Linux:** `curl -fsSL https://raw.githubusercontent.com/0x9Angel/gotham-relay/main/infra/scripts/uninstall-relay.sh | sudo bash`
-- **macOS:** `curl -fsSL https://raw.githubusercontent.com/0x9Angel/gotham-relay/main/infra/scripts/uninstall-relay-macos.sh | sudo bash`
-- **Windows:** `irm https://raw.githubusercontent.com/0x9Angel/gotham-relay/main/infra/scripts/uninstall-relay.ps1 | iex`
-
-Add `GOTHAM_KEEP_KEYS=1` (PowerShell `$env:GOTHAM_KEEP_KEYS='1'`) to keep the
-relay's identity key for a later reinstall with the same public key.
-
----
-
-## Honest status
-
-This is a young network. The relay software is hardened (memory-safe Rust,
-`forbid(unsafe)`, fuzzed parsers, CI-tested on Linux/macOS/Windows), but
-**anonymity from mixing is only as strong as the number of independent relays
-and operators.** Until the network is large and diverse, treat its guarantees
-as best-effort, not absolute. There is no such thing as 100% anonymity — run a
-relay to help, not to bet your life on it today.
-
-## License
-
-**AGPL-3.0-or-later** — see [`LICENSE`](LICENSE). Running a *modified* relay as
-a network service obliges you to publish your modified source under the AGPL.
+Copyright © 2026 0x9Angel.

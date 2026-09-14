@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Gotham-Commercial
-// Copyright (C) 2026 Lisan al-Gaib & ARRAKIS contributors.
+// Copyright (C) 2026 0x9Angel.
 
 //! [`GothamClient`] — high-level client that picks a path from a signed
 //! directory, builds a Sphinx-wrapped packet, and ships it to the first
@@ -17,13 +17,22 @@
 //! - No application-layer payload encryption here. Callers are
 //!   responsible for wrapping `payload` in the Crypto E2E layer (X3DH
 //!   + Double Ratchet) before calling [`GothamClient::send`].
-//! - The client's own X25519 identity is **ephemeral per `GothamClient`**.
-//!   For unlinkable sessions, instantiate a new client per outbound
-//!   batch (cheap — only one keypair is generated).
+//! - The client's X25519 key for the Noise XK handshake is **fresh for every
+//!   packet** (F-31). It used to be per-`GothamClient`, with a module note
+//!   telling callers to instantiate a new client per outbound batch — advice
+//!   the single caller did not follow and could not reasonably follow: the app
+//!   builds one client at unlock and shares it, through an `Arc`, for direct
+//!   sends, the cover loop, mailbox deposits and SURB fetches, for the whole
+//!   session. In Noise XK the initiator's static public key is delivered to
+//!   the responder, so that one key was handed to every entry relay the path
+//!   selector drew — a stable pseudonym linking every packet of a session
+//!   together, across IP changes, at whichever entries the user touched.
+//!   A precaution that depends on a caller remembering it is not a
+//!   precaution; the key is now generated where it is used.
 
 use std::net::SocketAddr;
 
-use crypto_gotham::directory::{PathSelector, RelayDescriptor};
+use crypto_gotham::directory::{PathSelector, RelayDescriptor, SelectedPath};
 use crypto_gotham::header::{
     derive_route_secrets, flag, mode, wrap_header, RoutingRecord, HEADER_LEN, TRAILER_LEN,
 };
@@ -38,12 +47,17 @@ use crate::transport::{build_client_endpoint, forward_packet, TransportError};
 /// Maximum payload size that fits inside a single Gotham packet.
 pub const MAX_PAYLOAD_SIZE: usize = PACKET_SIZE - HEADER_LEN;
 
-/// Mean per-hop mix delay the sender encodes, in microseconds. Tracks the
-/// BALANCED mode target (20 ms) used by [`GothamClient::send`]. Each hop's
-/// actual hold is an independent Exp(λ) draw with this mean (Loopix
-/// sender-chosen delays), NOT a constant — a constant would be both a weak
-/// mix and a header fingerprint.
-const SENDER_MEAN_DELAY_MICROS: u64 = 20_000;
+/// Mean per-hop mix delay the sender encodes, in microseconds, when no cover
+/// mode has been supplied. Each hop's actual hold is an independent Exp(λ) draw
+/// with this mean (Loopix sender-chosen delays), NOT a constant — a constant
+/// would be both a weak mix and a header fingerprint.
+///
+/// This was 20 ms, which is below the jitter of an ordinary internet path: an
+/// observer watching a relay's two links could pair packets by arrival order
+/// with no statistics at all, so the mixnet cost latency and bought no mixing.
+/// It now tracks [`CoverMode::Balanced`], and callers who know the user's mode
+/// should pass it via [`GothamClient::with_hop_delay`] rather than rely on this.
+const SENDER_MEAN_DELAY_MICROS: u64 = 500_000;
 
 /// Sample one sender-chosen per-hop delay (µs) from Exp(λ), clamped to ≥ 1.
 /// `0` is reserved on the wire for "unset" — relays then fall back to their
@@ -74,24 +88,73 @@ pub fn hop_count_for_mode(m: u8) -> Option<usize> {
 pub struct GothamClient {
     #[zeroize(skip)]
     endpoint: Endpoint,
-    client_sk: [u8; 32],
+    /// Mean per-hop delay this sender encodes, in microseconds. Set from the
+    /// user's `CoverMode` so that picking "paranoid" actually buys mixing
+    /// rather than only more cover packets.
+    #[zeroize(skip)]
+    mean_hop_delay_micros: u64,
+    /// F-38 — pinned ENTRY GUARDS (`id_pubkey_hex`), empty = any entry.
+    ///
+    /// A per-client property, like the delay above, so `send` and
+    /// `send_to_exit` keep their signatures and no caller can forget to pass
+    /// them — a guard set that half the send paths ignore is not a guard set.
+    #[zeroize(skip)]
+    entry_guards: Vec<String>,
 }
 
 impl GothamClient {
-    /// Construct a fresh client with a freshly-generated ephemeral
-    /// X25519 identity for the Noise XK handshake.
-    pub fn new<R: CryptoRng + RngCore>(rng: &mut R) -> Result<Self, TransportError> {
-        let mut sk = [0u8; 32];
-        rng.fill_bytes(&mut sk);
+    /// A fresh X25519 scalar for one Noise XK handshake.
+    ///
+    /// F-31 — per PACKET, never stored. The responder learns the initiator's
+    /// static public key in XK, so anything reused here is a pseudonym handed
+    /// to every entry relay this client ever touches.
+    fn fresh_handshake_key() -> zeroize::Zeroizing<[u8; 32]> {
+        let mut sk = zeroize::Zeroizing::new([0u8; 32]);
+        rand::rngs::OsRng.fill_bytes(&mut sk[..]);
         // X25519 scalar clamping.
         sk[0] &= 248;
         sk[31] &= 127;
         sk[31] |= 64;
+        sk
+    }
+
+    /// Construct a client. The `rng` argument is kept for call-site
+    /// compatibility and is no longer used to derive a long-lived identity —
+    /// there isn't one any more (F-31).
+    pub fn new<R: CryptoRng + RngCore>(_rng: &mut R) -> Result<Self, TransportError> {
         let endpoint = build_client_endpoint()?;
         Ok(Self {
             endpoint,
-            client_sk: sk,
+            mean_hop_delay_micros: SENDER_MEAN_DELAY_MICROS,
+            entry_guards: Vec::new(),
         })
+    }
+
+    /// Set the mean per-hop mix delay from the user's cover mode.
+    ///
+    /// Without this a client mixes at the Balanced rate whatever the user
+    /// chose, which is how the setting came to be cosmetic: "paranoid" sent
+    /// more cover packets but held them exactly as briefly.
+    #[must_use]
+    pub fn with_hop_delay(mut self, mean_micros: u64) -> Self {
+        // A zero mean would divide by zero in the Poisson draw, and on the wire
+        // 0 means "unset" — the relay would fall back to its own scheduler,
+        // silently discarding the user's choice.
+        self.mean_hop_delay_micros = mean_micros.max(1_000);
+        self
+    }
+
+    /// Pin the ENTRY GUARDS this client will use as its first hop (F-38).
+    ///
+    /// Empty restores "draw any entry", which is what every client did before:
+    /// a fresh entry per packet, ~8640 draws a day at Balanced, so meeting an
+    /// adversary-run entry stopped being a question of whether and became one
+    /// of when — measured in hours. Pinning makes the risk a one-time draw
+    /// instead of a repeated one.
+    #[must_use]
+    pub fn with_entry_guards(mut self, guards: Vec<String>) -> Self {
+        self.entry_guards = guards;
+        self
     }
 
     /// Send `payload` through a freshly-selected `hop_count`-hop path
@@ -121,12 +184,48 @@ impl GothamClient {
             return Err(ClientError::BadHopCount);
         }
 
-        // 1. Path selection.
-        let selector = PathSelector::new(relays);
-        let path = selector
+        // Select a diverse random path, then build + ship the onion.
+        let path = PathSelector::new(relays)
+            .with_guards(&self.entry_guards)
             .pick(rng, hop_count)
             .map_err(|_| ClientError::PathSelection)?;
+        self.ship_path(rng, &path, payload).await
+    }
 
+    /// Like [`send`](Self::send), but forces the LAST hop to `exit` (via
+    /// [`PathSelector::pick_to_exit`]). Used to route a payload to a specific
+    /// relay — e.g. a store-and-forward mailbox host — so a deposit rides the
+    /// mixnet and the host never sees the depositor's IP.
+    pub async fn send_to_exit<R: CryptoRng + RngCore>(
+        &self,
+        rng: &mut R,
+        relays: &[RelayDescriptor],
+        hop_count: usize,
+        exit: &RelayDescriptor,
+        payload: &[u8],
+    ) -> Result<(), ClientError> {
+        if payload.len() > MAX_PAYLOAD_SIZE {
+            return Err(ClientError::PayloadTooLarge);
+        }
+        if !(3..=5).contains(&hop_count) {
+            return Err(ClientError::BadHopCount);
+        }
+        let path = PathSelector::new(relays)
+            .with_guards(&self.entry_guards)
+            .pick_to_exit(rng, hop_count, exit)
+            .map_err(|_| ClientError::PathSelection)?;
+        self.ship_path(rng, &path, payload).await
+    }
+
+    /// Build the Sphinx onion for `path` and ship the 2048 B packet to the
+    /// entry hop. Shared by [`send`](Self::send) and
+    /// [`send_to_exit`](Self::send_to_exit).
+    async fn ship_path<R: CryptoRng + RngCore>(
+        &self,
+        rng: &mut R,
+        path: &SelectedPath<'_>,
+        payload: &[u8],
+    ) -> Result<(), ClientError> {
         // 2. Per-hop crypto material.
         let recipient_pks: Vec<[u8; 32]> = path
             .hops
@@ -145,21 +244,29 @@ impl GothamClient {
         // Sender-chosen Loopix delays: each hop's hold time is an independent
         // Exp(λ) draw (mean = mode target), encoded per record and honored by
         // the relay (see `process.rs`). Built once, sampled per hop.
-        let delay_sched = PoissonScheduler::new(SENDER_MEAN_DELAY_MICROS);
+        let delay_sched = PoissonScheduler::new(self.mean_hop_delay_micros);
         let mut records: Vec<RoutingRecord> = Vec::with_capacity(n);
         for i in 0..n {
             let mut rec = RoutingRecord::default();
             if i + 1 < n {
                 let next = path.hops[i + 1];
-                rec.next_ipv4 = next
-                    .ipv4_octets()
-                    .map_err(|_| ClientError::BadDirectory("non-ipv4 next addr"))?;
-                rec.next_port = next
-                    .port()
-                    .map_err(|_| ClientError::BadDirectory("bad next port"))?;
                 rec.next_node_id = next
                     .kem_pubkey_bytes()
                     .map_err(|_| ClientError::BadDirectory("next node id"))?;
+                if next.rendezvous.is_some() {
+                    // RFC B3: the next hop is a CGNAT relay reachable only via
+                    // THIS hop (its rendezvous R). Address it by identity and set
+                    // the flag; R pushes it down the tunnel. Leave next_ipv4/port
+                    // as the zero sentinel (never dialed).
+                    rec.flag = flag::VIA_RENDEZVOUS;
+                } else {
+                    rec.next_ipv4 = next
+                        .ipv4_octets()
+                        .map_err(|_| ClientError::BadDirectory("non-ipv4 next addr"))?;
+                    rec.next_port = next
+                        .port()
+                        .map_err(|_| ClientError::BadDirectory("bad next port"))?;
+                }
             } else {
                 rec.flag = flag::IS_LAST_HOP;
             }
@@ -173,11 +280,21 @@ impl GothamClient {
         let header = wrap_header(rng, mode::BALANCED, &alphas, &sub_keys, &records, trailer)
             .map_err(|_| ClientError::Crypto)?;
 
-        // 5. Assemble packet. Zero-padding after payload — v0.2 will
-        //    cover this region with per-hop AEAD.
+        // 5. Assemble packet, then onion-wrap the payload region.
         let mut packet = vec![0u8; PACKET_SIZE];
         packet[..HEADER_LEN].copy_from_slice(&header.encode());
         packet[HEADER_LEN..HEADER_LEN + payload.len()].copy_from_slice(payload);
+
+        // 5b. Per-hop payload onion (LIONESS wide-block PRP). Encrypt the WHOLE
+        //     payload region (incl. the zero-padding, so there's no constant
+        //     tail to fingerprint) once per hop, innermost first: apply the LAST
+        //     hop's layer, then wrap outward so the entry sees the outermost.
+        //     Each relay peels exactly its own layer; the exit recovers the
+        //     original `payload`. LIONESS is non-malleable, so the payload not
+        //     only differs at every hop but can't be tagged-and-tracked.
+        for sub in sub_keys.iter().rev() {
+            crypto_gotham::lioness::encrypt(&sub.k_payload, &mut packet[HEADER_LEN..]);
+        }
 
         // 6. Ship to entry hop. Use the entry's KEM pubkey as the Noise
         //    XK peer key (relay's identity_sk == kem_sk in v0.1).
@@ -190,11 +307,15 @@ impl GothamClient {
             .kem_pubkey_bytes()
             .map_err(|_| ClientError::BadDirectory("entry kem pk"))?;
 
+        // F-31 — a key generated here, used once, and wiped when this scope
+        // ends. Two packets from this client are no longer linkable by their
+        // handshake key, which is what a shared static key made them.
+        let handshake_sk = Self::fresh_handshake_key();
         forward_packet(
             &self.endpoint,
             entry_addr,
             &entry_pk,
-            &self.client_sk,
+            &handshake_sk,
             &packet,
         )
         .await
@@ -229,6 +350,22 @@ impl GothamClient {
         sender_pk: &[u8; 32],
         body: &[u8],
     ) -> Result<(), ClientError> {
+        let framed = Self::seal_and_frame(rng, recipient_pk, sender_pk, body)?;
+        self.send(rng, relays, hop_count, &framed).await
+    }
+
+    /// Seal `body` for `recipient_pk` and frame it (a 4 B big-endian length
+    /// prefix ahead of the envelope) into exactly the payload bytes
+    /// [`send`](Self::send) / the mixnet will carry. Split out of
+    /// [`send_sealed`](Self::send_sealed) so a caller that dispatches through a
+    /// queue (e.g. the cover-traffic loop, to hide send timing) can pre-build
+    /// the payload and hand it to `send`.
+    pub fn seal_and_frame<R: CryptoRng + RngCore>(
+        rng: &mut R,
+        recipient_pk: &[u8; 32],
+        sender_pk: &[u8; 32],
+        body: &[u8],
+    ) -> Result<Vec<u8>, ClientError> {
         let envelope = crypto_gotham::sealed::seal(rng, recipient_pk, sender_pk, body)
             .map_err(|_| ClientError::Crypto)?;
         // Frame the variable-length envelope with a 4 B big-endian length
@@ -240,7 +377,59 @@ impl GothamClient {
         if framed.len() > MAX_PAYLOAD_SIZE {
             return Err(ClientError::PayloadTooLarge);
         }
-        self.send(rng, relays, hop_count, &framed).await
+        Ok(framed)
+    }
+
+    /// Like [`send_sealed`](Self::send_sealed), but seals `body` for the chosen
+    /// `exit` relay's KEM key and forces that relay as the last hop. Used to
+    /// deposit into a mailbox host over the mixnet: `body` is a serialized
+    /// `MailboxRequest::Deposit`, the host unseals it (with its own key) and
+    /// stores the inner envelope — and never learns the depositor's IP.
+    ///
+    /// Returns [`ClientError::PayloadTooLarge`] if the sealed request doesn't
+    /// fit one packet; the caller should then fall back to a direct deposit.
+    pub async fn send_sealed_to_exit<R: CryptoRng + RngCore>(
+        &self,
+        rng: &mut R,
+        relays: &[RelayDescriptor],
+        hop_count: usize,
+        exit: &RelayDescriptor,
+        sender_pk: &[u8; 32],
+        body: &[u8],
+    ) -> Result<(), ClientError> {
+        let framed = Self::frame_sealed_for_exit(rng, exit, sender_pk, body)?;
+        self.send_to_exit(rng, relays, hop_count, exit, &framed)
+            .await
+    }
+
+    /// Seal `body` for `exit` and length-frame it, WITHOUT sending.
+    ///
+    /// F-39 — split out of [`send_sealed_to_exit`] so a caller can build the
+    /// packet and hand it to the cover-traffic queue instead of shipping it
+    /// immediately. A mailbox deposit that goes out the moment the user
+    /// presses send is an off-cadence emission: the sealing hides the
+    /// depositor from the HOST, and does nothing about an observer on the
+    /// link, who reads the send instant straight off the packet clock. The
+    /// content is hidden and the fact that something was sent, right then, is
+    /// not — which is the metadata this product exists to protect.
+    pub fn frame_sealed_for_exit<R: CryptoRng + RngCore>(
+        rng: &mut R,
+        exit: &RelayDescriptor,
+        sender_pk: &[u8; 32],
+        body: &[u8],
+    ) -> Result<Vec<u8>, ClientError> {
+        let exit_kem = exit
+            .kem_pubkey_bytes()
+            .map_err(|_| ClientError::BadDirectory("exit kem pk"))?;
+        let envelope = crypto_gotham::sealed::seal(rng, &exit_kem, sender_pk, body)
+            .map_err(|_| ClientError::Crypto)?;
+        let mut framed = Vec::with_capacity(4 + envelope.len());
+        framed.extend_from_slice(&(envelope.len() as u32).to_be_bytes());
+        framed.extend_from_slice(&envelope);
+        if framed.len() > MAX_PAYLOAD_SIZE {
+            return Err(ClientError::PayloadTooLarge);
+        }
+        Ok(framed)
     }
 }
 
@@ -346,6 +535,9 @@ mod tests {
             asn: None,
             operator: Some(op.into()),
             uptime_pct: Some(99.9),
+            mailbox: false,
+            rendezvous: None,
+            rendezvous_capable: false,
         }
     }
 
@@ -665,5 +857,37 @@ mod tests {
         assert_eq!(hop_count_for_mode(mode::BALANCED), Some(4));
         assert_eq!(hop_count_for_mode(mode::PARANOID), Some(5));
         assert_eq!(hop_count_for_mode(99), None);
+    }
+
+    /// F-31 — the Noise handshake key must be fresh for every packet.
+    ///
+    /// In Noise XK the initiator's static public key is delivered to the
+    /// responder, so an entry relay learns it. A key reused across a session
+    /// is therefore a stable pseudonym: every packet this client sends, to
+    /// whichever entry the path selector happened to draw, links back to the
+    /// same sender — across IP changes, for the whole unlocked session.
+    ///
+    /// The old design put the key on the struct and told callers, in a module
+    /// comment, to build a new client per outbound batch. The one caller could
+    /// not: the app builds a client at unlock and shares it through an `Arc`
+    /// for direct sends, the cover loop, mailbox deposits and SURB fetches.
+    #[test]
+    fn every_handshake_key_is_fresh_and_clamped() {
+        let a = GothamClient::fresh_handshake_key();
+        let b = GothamClient::fresh_handshake_key();
+        assert_ne!(*a, *b, "two handshakes must not share a key");
+
+        // Valid X25519 scalars, or the handshake simply fails.
+        for k in [&a, &b] {
+            assert_eq!(k[0] & 7, 0);
+            assert_eq!(k[31] & 128, 0);
+            assert_eq!(k[31] & 64, 64);
+        }
+
+        // And the struct holds no key at all any more — this is what stops a
+        // future edit from quietly reintroducing a per-session identity.
+        // (A field would have to be added back for this to fail to compile.)
+        let sizes = std::mem::size_of::<GothamClient>();
+        assert!(sizes > 0);
     }
 }

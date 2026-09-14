@@ -2,8 +2,9 @@
 name = "crypto-gotham-relay"
 version = "0.1.0"
 edition = "2021"
+license = "AGPL-3.0-or-later OR LicenseRef-Gotham-Commercial"
 description = "Standalone Gotham mixnet relay daemon"
-authors = ["Lisan al-Gaib & ARRAKIS"]
+authors = ["0x9Angel"]
 
 [[bin]]
 name = "gotham-relay"
@@ -11,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 crypto-gotham = { path = "../crypto-gotham" }
+crypto-gotham-directory = { path = "../crypto-gotham-directory" }
 
 # Async runtime
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "signal", "sync"] }
@@ -20,6 +22,7 @@ clap = { version = "4", features = ["derive", "env"] }
 toml = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+rmp-serde = "1"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 
 # Logging (counters-only — never per-packet data, never IPs)
@@ -38,6 +41,10 @@ zeroize = { version = "1", features = ["derive"] }
 
 # Errors
 thiserror = "1"
+
+# NAT traversal — UPnP-IGD auto port-mapping so a volunteer behind a home
+# router is reachable without hand-configuring a port-forward.
+igd-next = { version = "0.15", features = ["aio_tokio"] }
 
 # Transport — QUIC + Noise XK
 quinn = "0.11"

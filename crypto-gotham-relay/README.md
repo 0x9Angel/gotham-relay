@@ -34,14 +34,14 @@ shipped systemd unit). Otherwise pick a port > 1024.
 
 | Component | State |
 |---|---|
-| Identity keygen + pubkey |  Implemented |
-| Replay cache (LRU + TTL) |  Implemented + tested |
-| Poisson delay scheduler |  Implemented + tested |
-| Stateless `process_packet` |  Implemented + tested (forward / deliver / drop) |
-| QUIC listener (UDP/443) | P2.next |
-| Noise XK per-link | P2.next |
-| Prometheus metrics endpoint | P2.next |
-| Directory enrolment workflow | P3 |
+| Identity keygen + pubkey | Implemented |
+| Replay cache (LRU + TTL) | Implemented + tested |
+| Poisson delay scheduler | Implemented + tested |
+| Stateless `process_packet` | Implemented + tested (forward / deliver / drop) |
+| QUIC listener (UDP/443) | ⏳ P2.next |
+| Noise XK per-link | ⏳ P2.next |
+| Prometheus metrics endpoint | ⏳ P2.next |
+| Directory enrolment workflow | ⏳ P3 |
 
 ## Deployment
 
@@ -71,4 +71,5 @@ exposed. Logs at `info` and `warn` levels carry only operational status
 
 ## License
 
-Dual AGPLv3 + commercial. See [`../LICENSE`](../LICENSE) for terms.
+Dual AGPLv3 + commercial. See `crypto-gotham/LICENSE-AGPL` and
+`crypto-gotham/LICENSE-COMMERCIAL` for terms.

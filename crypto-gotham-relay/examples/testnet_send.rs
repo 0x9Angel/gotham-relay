@@ -46,7 +46,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|e| format!("send_sealed: {e}"))?;
 
     println!(
-        " send_sealed OK — the entry relay accepted the packet; check the \
+        "send_sealed OK — the entry relay accepted the packet; check the \
          relay logs for the entry → mix → exit traversal."
     );
     Ok(())

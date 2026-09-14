@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Gotham-Commercial
-// Copyright (C) 2026 Lisan al-Gaib & ARRAKIS contributors.
+// Copyright (C) 2026 0x9Angel.
 
 //! Poisson-process delay scheduler (Loopix / Sphinx mix-delay style).
 //!
@@ -25,7 +25,7 @@ pub struct PoissonScheduler {
 impl PoissonScheduler {
     /// Construct a scheduler whose mean delay is `mean_delay_micros`.
     ///
-    /// Typical values per Gotham mode (see `GOTHAM.md` §5.1):
+    /// Typical values per Gotham mode (see `docs/gotham/README.md` §5.1):
     /// - low-latency: 10_000 (10 ms)
     /// - balanced:    20_000 (20 ms)
     /// - paranoid:    50_000 (50 ms)
