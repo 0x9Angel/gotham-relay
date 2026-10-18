@@ -1,0 +1,43 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag already built and published by 0x9Angel/gotham'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  mirror:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download and verify the binaries built by 0x9Angel/gotham
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          mkdir dist
+          cd dist
+          gh release download "$TAG" --repo 0x9Angel/gotham
+          for sums in SHA256SUMS-*.txt; do
+            sed -e 's/\r$//' -e '1s/^\xEF\xBB\xBF//' "$sums" | sha256sum --check --strict -
+          done
+          for f in gotham-*; do
+            case "$f" in *.sha256) continue ;; esac
+            sha256sum "$f" > "$f.sha256"
+          done
+          ls -l
+
+      - name: Publish the release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
+        with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          name: Gotham relay ${{ inputs.tag || github.ref_name }}
+          files: dist/*
+          fail_on_unmatched_files: true
